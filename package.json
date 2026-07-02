@@ -1,0 +1,48 @@
+{
+  "name": "codebridge",
+  "version": "1.0.0",
+  "description": "WhatsApp to Claude Code Bridge - Coding via WhatsApp chat",
+  "type": "module",
+  "main": "src/mcp-server/server.js",
+  "scripts": {
+    "start": "node src/mcp-server/server.js",
+    "dev": "NODE_ENV=development node --watch src/mcp-server/server.js",
+    "start:prod": "pm2 start scripts/pm2.config.js",
+    "stop": "pm2 stop codebridge",
+    "restart": "pm2 restart codebridge",
+    "logs": "pm2 logs codebridge",
+    "test": "NODE_ENV=test node --test",
+    "lint": "eslint src/",
+    "setup": "bash scripts/setup.sh"
+  },
+  "keywords": [
+    "whatsapp",
+    "claude",
+    "ai",
+    "coding",
+    "mcp",
+    "baileys",
+    "automation"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "^0.54.1",
+    "@agentclientprotocol/sdk": "^1.0.0",
+    "@modelcontextprotocol/sdk": "^0.5.0",
+    "axios": "^1.6.0",
+    "dotenv": "^16.4.0",
+    "winston": "^3.11.0",
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "eslint": "^8.56.0",
+    "pm2": "^5.3.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "directories": {
+    "doc": "docs"
+  }
+}
