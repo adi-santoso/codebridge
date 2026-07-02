@@ -3,17 +3,14 @@
   "version": "1.0.0",
   "description": "WhatsApp to Claude Code Bridge - Coding via WhatsApp chat",
   "type": "module",
-  "main": "src/mcp-server/server.js",
+  "main": "src/index.js",
   "scripts": {
-    "start": "node src/mcp-server/server.js",
-    "dev": "NODE_ENV=development node --watch src/mcp-server/server.js",
-    "start:prod": "pm2 start scripts/pm2.config.js",
-    "stop": "pm2 stop codebridge",
-    "restart": "pm2 restart codebridge",
-    "logs": "pm2 logs codebridge",
-    "test": "NODE_ENV=test node --test",
-    "lint": "eslint src/",
-    "setup": "bash scripts/setup.sh"
+    "start": "node src/index.js",
+    "dev": "NODE_ENV=development node --watch src/index.js",
+    "test:phase1": "node examples/phase1-demo.js",
+    "test:phase2": "node examples/phase2-demo.js",
+    "test:acp": "node tests/test-claude-agent-acp.js",
+    "lint": "eslint src/"
   },
   "keywords": [
     "whatsapp",
@@ -30,6 +27,8 @@
     "@agentclientprotocol/claude-agent-acp": "^0.54.1",
     "@agentclientprotocol/sdk": "^1.0.0",
     "@modelcontextprotocol/sdk": "^0.5.0",
+    "whatsapp-web.js": "^1.23.0",
+    "qrcode-terminal": "^0.12.0",
     "axios": "^1.6.0",
     "dotenv": "^16.4.0",
     "winston": "^3.11.0",

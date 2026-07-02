@@ -1,292 +1,249 @@
 # CodeBridge - WhatsApp to Claude Code Bridge
 
-Bridge untuk menghubungkan WhatsApp (via Baileys) dengan Claude Code, memungkinkan coding via chat WhatsApp.
+Bridge untuk menghubungkan WhatsApp dengan Claude Code, memungkinkan coding via chat WhatsApp.
+
+## ✅ Implementation Status
+
+- ✅ **Phase 1**: Claude Code Session Management - COMPLETE
+- ✅ **Phase 2**: WhatsApp Integration - COMPLETE
+- 🚧 **Phase 3**: Production Ready (upcoming)
+
+## Quick Start
+
+### Phase 1: Claude Session Management (✅ Complete)
+
+Test Claude Code integration:
+
+```bash
+npm run test:phase1
+```
+
+### Phase 2: WhatsApp Integration (✅ Complete)
+
+Test message handling (mock WhatsApp):
+
+```bash
+npm run test:phase2
+```
+
+### Run Full Bridge
+
+Start the WhatsApp-to-Claude bridge:
+
+```bash
+npm start
+```
+
+On first run, scan the QR code with WhatsApp to authenticate.
 
 ## Architecture
 
 ```
 ┌──────────────────────────────────────────────┐
-│ Baileys Gateway (External)                   │
-│ - WhatsApp session management                │
-│ - QR scan & authentication                   │
+│ WhatsApp Client (whatsapp-web.js)           │
+│ - QR authentication                          │
+│ - Message send/receive                       │
 └──────────────────────────────────────────────┘
-                    ↓ HTTP/WebSocket
+                    ↓
 ┌──────────────────────────────────────────────┐
-│ CodeBridge MCP Server                        │
-│ - Session management per user                │
-│ - Project switching                          │
-│ - Command parsing & routing                  │
-│ - Auto cleanup idle sessions                 │
+│ CodeBridge Core                              │
+│ - MessageHandler: Route messages             │
+│ - SessionManager: Per-user sessions          │
+│ - Commands: /start, /reset, /help           │
 └──────────────────────────────────────────────┘
-                    ↓ MCP Protocol
+                    ↓
 ┌──────────────────────────────────────────────┐
-│ Claude Code Instances                        │
-│ - Per user/project isolation                 │
-│ - File operations & code execution           │
+│ Claude Code (claude-agent-acp)               │
+│ - ACPClient: Subprocess wrapper              │
+│ - JSON-RPC communication                     │
+│ - Custom model endpoint support              │
 └──────────────────────────────────────────────┘
 ```
 
 ## Features
 
 - **Multi-user Support**: Setiap nomor WhatsApp punya session Claude terpisah
-- **Project Switching**: Ganti project dengan command `/switch`
-- **Session Persistence**: Context conversation tersimpan
-- **Auto Cleanup**: Instance idle otomatis dibersihkan (configurable)
-- **Security**: Whitelist nomor yang allowed
-- **Command System**: Built-in commands untuk management
+- **Multi-turn Conversation**: Context conversation tersimpan per session
+- **Command System**: `/start`, `/reset`, `/help` commands
+- **Custom Model**: Support untuk custom Anthropic-compatible endpoints
+- **Auto Cleanup**: Session management dengan graceful shutdown
+- **Notification Streaming**: Real-time response dari Claude
 
 ## Directory Structure
 
 ```
 codebridge/
 ├── src/
-│   ├── mcp-server/           # MCP server core
-│   │   ├── server.js         # Main MCP server
-│   │   ├── tools.js          # MCP tools definition
-│   │   └── resources.js      # MCP resources definition
-│   ├── whatsapp/             # WhatsApp integration
-│   │   ├── client.js         # Baileys client wrapper
-│   │   └── webhook.js        # Webhook handler (optional)
-│   ├── claude/               # Claude Code management
-│   │   ├── instance.js       # Claude process manager
-│   │   └── session.js        # Session state manager
-│   ├── commands/             # Command handlers
-│   │   ├── index.js          # Command parser
-│   │   ├── project.js        # Project commands
-│   │   └── system.js         # System commands
-│   └── utils/
-│       ├── message-queue.js  # Message queue
-│       ├── logger.js         # Logging utility
-│       └── config.js         # Config loader
-├── config/
-│   ├── projects.json         # Project paths configuration
-│   ├── settings.json         # Bridge settings
-│   └── .env.example          # Environment variables template
-├── data/                     # Runtime data (gitignored)
-│   ├── sessions/             # User sessions state
-│   └── logs/                 # Application logs
-├── docs/
-│   ├── SETUP.md              # Setup instructions
-│   ├── COMMANDS.md           # Available commands
-│   └── ARCHITECTURE.md       # Technical architecture
-├── scripts/
-│   ├── start.sh              # Start script
-│   ├── setup.sh              # Initial setup
-│   └── pm2.config.js         # PM2 configuration
+│   ├── claude/                 # Claude Code integration
+│   │   ├── acp-client.js       # claude-agent-acp wrapper
+│   │   └── session-manager.js  # Session management API
+│   ├── whatsapp/               # WhatsApp integration
+│   │   ├── client.js           # WhatsApp client wrapper
+│   │   └── message-handler.js  # Message routing
+│   ├── utils/
+│   │   ├── config.js           # Configuration
+│   │   └── logger.js           # Logging utility
+│   ├── bridge.js               # Main bridge coordinator
+│   └── index.js                # Entry point
+├── examples/
+│   ├── phase1-demo.js          # Claude session test
+│   └── phase2-demo.js          # WhatsApp integration test
+├── tests/
+│   └── test-claude-agent-acp.js
 ├── package.json
+├── CLAUDE.md
 └── README.md
 ```
 
-## Quick Start
-
-### 1. Install Dependencies
+## Installation
 
 ```bash
+# Clone repository
+git clone https://github.com/adi-santoso/codebridge.git
 cd codebridge
+
+# Install dependencies
 npm install
-```
-
-### 2. Configuration
-
-```bash
-# Copy environment template
-cp config/.env.example .env
-
-# Edit .env
-nano .env
-
-# Configure projects
-nano config/projects.json
-```
-
-### 3. Run
-
-```bash
-# Development
-npm run dev
-
-# Production (with PM2)
-npm run start:prod
-
-# Or manual
-node src/mcp-server/server.js
 ```
 
 ## Configuration
 
-### Environment Variables (.env)
+Edit `src/utils/config.js` untuk custom settings:
 
-```env
-# Baileys Gateway
-BAILEYS_URL=http://localhost:3000
-BAILEYS_SESSION_ID=default
-
-# Security
-ALLOWED_NUMBERS=628123456789,628987654321
-
-# Claude Settings
-CLAUDE_API_KEY=your_api_key_here
-DEFAULT_MODEL=claude-3-5-sonnet-20241022
-
-# Session Management
-SESSION_IDLE_TIMEOUT=1800000        # 30 minutes in ms
-SESSION_CLEANUP_INTERVAL=300000     # 5 minutes in ms
-MAX_CONCURRENT_SESSIONS=10
-
-# Logging
-LOG_LEVEL=info
-LOG_FILE=data/logs/codebridge.log
-```
-
-### Projects Configuration (config/projects.json)
-
-```json
-{
-  "laravel-api": {
-    "path": "/home/user/projects/laravel-api",
-    "description": "Laravel REST API",
-    "default": true
+```javascript
+export const config = {
+  claude: {
+    apiKey: process.env.ANTHROPIC_API_KEY || 'your-api-key',
+    baseUrl: process.env.ANTHROPIC_BASE_URL || 'http://127.0.0.1:3847/',
+    model: process.env.CLAUDE_MODEL || 'kiro-claude-sonnet-4.5',
   },
-  "react-dashboard": {
-    "path": "/home/user/projects/react-dashboard",
-    "description": "React Admin Dashboard"
+  session: {
+    defaultMode: 'bypassPermissions',
+    timeout: 300000,  // 5 minutes
+    maxRetries: 3,
   },
-  "mobile-app": {
-    "path": "/home/user/projects/mobile-app",
-    "description": "React Native Mobile App"
-  }
-}
+};
 ```
 
 ## WhatsApp Commands
 
-### Project Management
-- `/projects` - List all available projects
-- `/switch <project>` - Switch to different project
-- `/current` - Show current project info
-
-### Session Management
-- `/status` - Show session status
-- `/reset` - Reset conversation context
+### System Commands
+- `/start` - Welcome message dan intro
+- `/reset` - Reset session (start fresh)
 - `/help` - Show available commands
 
-### Coding Commands
-Just send normal messages untuk coding tasks:
+### Coding via Chat
+Just send normal messages:
+
 ```
-User: "fix bug di UserController line 45"
-User: "tambahkan validation email di form register"
-User: "refactor function getUserData jadi lebih clean"
-```
+User: "Hello! Can you help me create a React component?"
+Claude: [Creates React component code...]
 
-## Setup with Claude Code
-
-Add to `~/.claude/settings.json`:
-
-```json
-{
-  "mcpServers": {
-    "codebridge": {
-      "command": "node",
-      "args": ["D:/working/gatrion/codebridge/src/mcp-server/server.js"],
-      "env": {
-        "NODE_ENV": "production"
-      }
-    }
-  }
-}
+User: "Can you add TypeScript types to it?"
+Claude: [Adds TypeScript types...]
 ```
 
-## Deployment (Ubuntu Server)
+Multi-turn conversation dengan context preservation!
 
-### With PM2
+## Technical Details
 
-```bash
-# Install PM2
-npm install -g pm2
+### Phase 1: Claude Session Management
 
-# Start
-pm2 start scripts/pm2.config.js
+**File: `src/claude/acp-client.js`**
+- Spawns `claude-agent-acp` as Node.js subprocess
+- JSON-RPC 2.0 communication over stdio
+- Handles notifications for streaming responses
+- Custom model endpoint support
 
-# Save for auto-restart
-pm2 save
-pm2 startup
-```
+**File: `src/claude/session-manager.js`**
+- High-level API for per-user sessions
+- Session lifecycle: create → message → cleanup
+- Maps userId (phone) to Claude session
 
-### With Systemd
+### Phase 2: WhatsApp Integration
 
-```bash
-# Copy service file
-sudo cp scripts/codebridge.service /etc/systemd/system/
+**File: `src/whatsapp/client.js`**
+- Uses `whatsapp-web.js` for WhatsApp connection
+- QR code authentication
+- Message send/receive handlers
 
-# Enable and start
-sudo systemctl enable codebridge
-sudo systemctl start codebridge
+**File: `src/whatsapp/message-handler.js`**
+- Routes messages to appropriate handlers
+- Command parsing (`/start`, `/reset`, `/help`)
+- Extracts Claude response from notifications
+- Typing indicators
 
-# Check status
-sudo systemctl status codebridge
-```
+**File: `src/bridge.js`**
+- Coordinates WhatsApp ↔ Claude
+- Handles startup/shutdown
+- Status monitoring
 
 ## Development
 
 ```bash
-# Install dependencies
-npm install
+# Run Phase 1 test (Claude only)
+npm run test:phase1
 
-# Run tests
-npm test
+# Run Phase 2 test (Mock WhatsApp)
+npm run test:phase2
 
-# Run with watch mode
+# Run full integration test
+npm run test:acp
+
+# Start development mode with watch
 npm run dev
 
-# Lint
+# Lint code
 npm run lint
 ```
 
-## Security Notes
-
-1. **Whitelist Numbers**: Hanya nomor di `ALLOWED_NUMBERS` yang bisa akses
-2. **API Keys**: Jangan commit `.env` ke git
-3. **File Access**: Claude hanya bisa akses project yang dikonfigurasi
-4. **Rate Limiting**: Implement rate limiting untuk prevent abuse
-
 ## Troubleshooting
 
-### Claude instance tidak start
-- Check `CLAUDE_API_KEY` valid
-- Check disk space untuk session storage
-- Check logs: `tail -f data/logs/codebridge.log`
+### Claude subprocess fails to spawn
 
-### WhatsApp tidak connect
-- Check `BAILEYS_URL` accessible
-- Check Baileys gateway running
-- Verify `BAILEYS_SESSION_ID` exists di gateway
+**Error:** `'node' is not recognized`
 
-### Memory usage tinggi
-- Turunkan `MAX_CONCURRENT_SESSIONS`
-- Turunkan `SESSION_IDLE_TIMEOUT`
-- Check untuk memory leaks di logs
+**Solution:** Direct JS file execution:
+```javascript
+const scriptPath = 'node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js';
+spawn('node', [scriptPath], { stdio: ['pipe', 'pipe', 'pipe'] });
+```
 
-## Project Status
+### WhatsApp QR code not showing
 
-🚧 **Design Phase Complete** - Implementation belum dimulai
+Check that `whatsapp-web.js` is installed:
+```bash
+npm install whatsapp-web.js qrcode-terminal
+```
 
-Lihat [ROADMAP.md](docs/ROADMAP.md) untuk detail timeline dan tasks.
+### Session timeout
 
-## Documentation
+Increase timeout in `src/utils/config.js`:
+```javascript
+session: {
+  timeout: 600000,  // 10 minutes
+}
+```
 
-- [Architecture Design](docs/ARCHITECTURE.md) - System architecture dan technical design
-- [Setup Guide](docs/SETUP.md) - Installation dan configuration guide
-- [Commands Reference](docs/COMMANDS.md) - Complete command documentation
-- [Implementation Roadmap](docs/ROADMAP.md) - Development timeline dan phases
+## Roadmap
 
-## Contributing
-
-Project ini masih dalam tahap design. Contribution guidelines akan ditambahkan setelah MVP selesai.
+- ✅ Phase 1: Claude Code subprocess integration
+- ✅ Phase 2: WhatsApp message routing
+- 🚧 Phase 3: Production ready
+  - Environment variables
+  - Error recovery
+  - Session persistence
+  - Rate limiting
+  - Logging improvements
 
 ## License
 
 MIT
 
+## Contributing
+
+Project ini masih dalam early development. Contributions welcome!
+
 ## Support
 
-Issues & questions: Create an issue atau contact project maintainer.
+Issues & questions: Create an issue di GitHub.
