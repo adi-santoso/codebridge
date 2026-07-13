@@ -24,6 +24,7 @@ module.exports = {
       // Environment variables (loaded from .env automatically via dotenv)
       env: {
         NODE_ENV: 'production',
+        PATH: '/home/deploy/.local/bin:/usr/local/bin:/usr/bin:/bin:' + process.env.PATH
       },
 
       // Instance configuration

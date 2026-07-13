@@ -155,7 +155,7 @@ export class DirectClaudeSpawner extends EventEmitter {
       cwd,
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: false,
+      shell: true, // Required for PM2 environment compatibility
       windowsHide: false // Show window for debugging (can be true in production)
     });
 
