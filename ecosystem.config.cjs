@@ -18,6 +18,9 @@ module.exports = {
       // Working directory
       cwd: '/var/www/codebridge',
 
+      // Run as specific user (uncomment if PM2 runs as root)
+      // user: 'deploy',
+
       // Interpreter
       interpreter: 'node',
 

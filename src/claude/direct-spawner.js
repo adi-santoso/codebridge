@@ -169,6 +169,9 @@ export class DirectClaudeSpawner extends EventEmitter {
     );
 
     this.emit('debug', `Working directory: ${cwd}`);
+    this.emit('debug', `User: ${process.env.USER || process.env.USERNAME || 'unknown'}`);
+    this.emit('debug', `UID: ${process.getuid ? process.getuid() : 'N/A'}`);
+    this.emit('debug', `Attempting to spawn: ${claudePath} with args: ${JSON.stringify(args)}`);
 
     const child = spawn(claudePath, args, {
       cwd,
