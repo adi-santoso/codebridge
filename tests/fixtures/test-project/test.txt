@@ -1,0 +1,2 @@
+This is a test file for CodeBridge E2E tests.
+It contains sample content to verify file reading capabilities.

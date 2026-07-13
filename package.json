@@ -3,13 +3,20 @@
   "version": "1.0.0",
   "description": "WhatsApp to Claude Code Bridge - Coding via WhatsApp chat",
   "type": "module",
-  "main": "src/index.js",
+  "main": "src/main.js",
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "NODE_ENV=development node --watch src/index.js",
+    "start": "node src/main.js",
+    "server": "node src/main.js",
+    "dev": "NODE_ENV=development node --watch src/main.js",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
+    "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage",
     "test:phase1": "node examples/phase1-demo.js",
     "test:phase2": "node examples/phase2-demo.js",
     "test:acp": "node tests/test-claude-agent-acp.js",
+    "test:server": "node tests/socket-server.test.js",
+    "test:kreova": "node tests/quick-kreova-test.js",
+    "test:session": "node tests/quick-session-test.js",
     "lint": "eslint src/"
   },
   "keywords": [
@@ -18,7 +25,6 @@
     "ai",
     "coding",
     "mcp",
-    "baileys",
     "automation"
   ],
   "author": "Your Name",
@@ -26,16 +32,22 @@
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "^0.54.1",
     "@agentclientprotocol/sdk": "^1.0.0",
+    "@anthropic-ai/sdk": "^0.110.0",
     "@modelcontextprotocol/sdk": "^0.5.0",
-    "whatsapp-web.js": "^1.23.0",
-    "qrcode-terminal": "^0.12.0",
     "axios": "^1.6.0",
+    "better-sqlite3": "^11.8.1",
     "dotenv": "^16.4.0",
+    "qrcode-terminal": "^0.12.0",
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3",
+    "which": "^6.0.1",
     "winston": "^3.11.0",
     "ws": "^8.16.0"
   },
   "devDependencies": {
+    "@types/jest": "^30.0.0",
     "eslint": "^8.56.0",
+    "jest": "^29.7.0",
     "pm2": "^5.3.0"
   },
   "engines": {

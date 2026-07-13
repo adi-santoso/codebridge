@@ -1,0 +1,29 @@
+{
+  "laravel-api": {
+    "path": "/home/user/projects/laravel-api",
+    "description": "Laravel REST API Project",
+    "default": true,
+    "settings": {
+      "autoCommit": false,
+      "autoTest": true
+    }
+  },
+  "react-dashboard": {
+    "path": "/home/user/projects/react-dashboard",
+    "description": "React Admin Dashboard",
+    "default": false,
+    "settings": {
+      "autoCommit": false,
+      "autoTest": false
+    }
+  },
+  "mobile-app": {
+    "path": "/home/user/projects/mobile-app",
+    "description": "React Native Mobile App",
+    "default": false,
+    "settings": {
+      "autoCommit": false,
+      "autoTest": false
+    }
+  }
+}

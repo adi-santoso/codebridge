@@ -1,0 +1,341 @@
+import { spawn } from 'child_process';
+import { EventEmitter } from 'events';
+import { attachAcpSession } from './acp-session-handler.js';
+import which from 'which';
+
+/**
+ * Direct Claude CLI Spawner
+ * Spawns Claude CLI subprocess directly with custom endpoint support
+ */
+
+const DEFAULT_MODEL = 'claude-3-5-sonnet-20241022';
+const DEFAULT_SPAWN_TIMEOUT = 10000; // 10 seconds
+
+export class DirectClaudeSpawner extends EventEmitter {
+  constructor(options = {}) {
+    super();
+
+    this.apiKey = options.apiKey;
+    this.customEndpoint = options.customEndpoint;
+    this.projectPath = options.projectPath;
+    this.model = options.model || DEFAULT_MODEL;
+
+    // Session storage: userId -> AcpSessionHandler
+    this.sessions = new Map();
+  }
+
+  /**
+   * Find Claude CLI executable path
+   * @returns {Promise<string>} - Path to Claude CLI
+   */
+  async findClaudeCli() {
+    try {
+      // Try to find 'claude' in PATH
+      const claudePath = await which('claude');
+      this.emit('debug', `Found Claude CLI at: ${claudePath}`);
+      return claudePath;
+    } catch (error) {
+      // Check common installation paths
+      const commonPaths = [
+        'C:\\Program Files\\Claude\\claude.exe',
+        'C:\\Users\\' + process.env.USERNAME + '\\AppData\\Local\\Programs\\Claude\\claude.exe',
+        '/usr/local/bin/claude',
+        '/opt/claude/bin/claude'
+      ];
+
+      for (const path of commonPaths) {
+        try {
+          const { existsSync } = await import('fs');
+          if (existsSync(path)) {
+            this.emit('debug', `Found Claude CLI at: ${path}`);
+            return path;
+          }
+        } catch (err) {
+          // Continue checking
+        }
+      }
+
+      throw new Error(
+        'Claude CLI not found. Please install Claude Code CLI and ensure it is in your PATH. ' +
+        'Visit: https://claude.ai/download'
+      );
+    }
+  }
+
+  /**
+   * Build environment variables for subprocess
+   * Includes custom endpoint configuration
+   * @returns {object} - Environment variables
+   */
+  buildEnvironment() {
+    const env = {
+      ...process.env,
+      NODE_ENV: 'development'
+    };
+
+    // Set API key
+    if (this.apiKey) {
+      env.ANTHROPIC_API_KEY = this.apiKey;
+    }
+
+    // Set custom endpoint (critical for avoiding exit code 143)
+    if (this.customEndpoint) {
+      env.ANTHROPIC_BASE_URL = this.customEndpoint;
+
+      // Bypass login requirement for custom endpoint
+      env.ANTHROPIC_AUTH_TOKEN = ' '; // Space character, not empty string
+
+      this.emit('debug', `Using custom endpoint: ${this.customEndpoint}`);
+    }
+
+    return env;
+  }
+
+  /**
+   * Spawn Claude CLI subprocess
+   * @param {string} cwd - Working directory
+   * @returns {Promise<ChildProcess>} - Spawned child process
+   */
+  async spawnClaudeProcess(cwd) {
+    const claudePath = await this.findClaudeCli();
+    const env = this.buildEnvironment();
+
+    this.emit('debug', `Spawning Claude CLI: ${claudePath} --print`);
+    this.emit('debug', `Working directory: ${cwd}`);
+
+    // Spawn subprocess with stream-json mode
+    // --print: non-interactive mode
+    // --input-format=stream-json: accept JSON input
+    // --output-format=stream-json: return JSON output
+    // --verbose: required when using --print with --output-format=stream-json
+    // --dangerously-skip-permissions: auto-approve all tools
+    const child = spawn(claudePath, [
+      '--print',
+      '--input-format=stream-json',
+      '--output-format=stream-json',
+      '--verbose',
+      '--dangerously-skip-permissions'
+    ], {
+      cwd,
+      env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: false,
+      windowsHide: false // Show window for debugging (can be true in production)
+    });
+
+    // Wait for spawn to complete
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        child.kill('SIGKILL');
+        reject(new Error('Claude CLI spawn timeout'));
+      }, DEFAULT_SPAWN_TIMEOUT);
+
+      child.once('spawn', () => {
+        clearTimeout(timeout);
+        this.emit('debug', `Claude CLI spawned: PID=${child.pid}`);
+        resolve(child);
+      });
+
+      child.once('error', (error) => {
+        clearTimeout(timeout);
+        reject(new Error(`Failed to spawn Claude CLI: ${error.message}`));
+      });
+    });
+  }
+
+  /**
+   * Create new Claude session for user
+   * @param {string} userId - User identifier
+   * @param {object} options - Session options
+   * @returns {Promise<AcpSessionHandler>} - Initialized session
+   */
+  async createSession(userId, options = {}) {
+    // Check if session already exists
+    if (this.sessions.has(userId)) {
+      this.emit('debug', `Reusing existing session for user: ${userId}`);
+      return this.sessions.get(userId);
+    }
+
+    try {
+      const cwd = options.cwd || this.projectPath;
+      const model = options.model || this.model;
+
+      if (!cwd) {
+        throw new Error('Project path (cwd) is required');
+      }
+
+      this.emit('debug', `Creating new session for user: ${userId}`);
+
+      // Step 1: Spawn subprocess
+      const child = await this.spawnClaudeProcess(cwd);
+
+      // Step 2: Attach ACP session handler
+      const session = await attachAcpSession({
+        child,
+        cwd,
+        model,
+        clientName: 'codebridge',
+        clientVersion: '1.0.0'
+      });
+
+      // Forward session events
+      session.on('text', (text) => this.emit('text', { userId, text }));
+      session.on('thinking', (thinking) => this.emit('thinking', { userId, thinking }));
+      session.on('tool-use', (tool) => this.emit('tool-use', { userId, tool }));
+      session.on('tool-result', (result) => this.emit('tool-result', { userId, result }));
+      session.on('error', (error) => this.emit('error', { userId, error }));
+      session.on('debug', (msg) => this.emit('debug', `[Session ${userId}] ${msg}`));
+      session.on('warn', (msg) => this.emit('warn', `[Session ${userId}] ${msg}`));
+      session.on('stderr', (data) => this.emit('stderr', { userId, data }));
+
+      // Handle session close
+      session.on('close', ({ code, signal, expected }) => {
+        this.emit('debug', `Session closed for user ${userId}: code=${code}, signal=${signal}`);
+        this.sessions.delete(userId);
+
+        if (!expected) {
+          this.emit('session-crashed', { userId, code, signal });
+        }
+      });
+
+      // Store session
+      this.sessions.set(userId, session);
+
+      this.emit('session-created', { userId, sessionId: session.sessionId });
+
+      return session;
+    } catch (error) {
+      this.emit('error', { userId, error });
+      throw error;
+    }
+  }
+
+  /**
+   * Get existing session or create new one
+   * @param {string} userId - User identifier
+   * @param {object} options - Session options
+   * @returns {Promise<AcpSessionHandler>} - Session handler
+   */
+  async getOrCreateSession(userId, options = {}) {
+    const existing = this.sessions.get(userId);
+
+    if (existing && existing.isReady && !existing.isClosed) {
+      return existing;
+    }
+
+    // Session doesn't exist or is not ready - create new one
+    if (existing) {
+      this.emit('debug', `Existing session for ${userId} is not ready, creating new one`);
+      await this.closeSession(userId);
+    }
+
+    return this.createSession(userId, options);
+  }
+
+  /**
+   * Send message to user's session
+   * @param {string} userId - User identifier
+   * @param {string} prompt - Message prompt
+   * @param {object} options - Session options (for creation if needed)
+   * @returns {Promise<object>} - Response object
+   */
+  async sendMessage(userId, prompt, options = {}) {
+    try {
+      const session = await this.getOrCreateSession(userId, options);
+      return await session.sendPrompt(prompt);
+    } catch (error) {
+      this.emit('error', { userId, error });
+      throw error;
+    }
+  }
+
+  /**
+   * Close session for user
+   * @param {string} userId - User identifier
+   */
+  async closeSession(userId) {
+    const session = this.sessions.get(userId);
+
+    if (!session) {
+      this.emit('debug', `No session to close for user: ${userId}`);
+      return;
+    }
+
+    try {
+      await session.close();
+      this.sessions.delete(userId);
+      this.emit('debug', `Session closed for user: ${userId}`);
+    } catch (error) {
+      this.emit('warn', `Failed to close session for ${userId}: ${error.message}`);
+      this.sessions.delete(userId);
+    }
+  }
+
+  /**
+   * Close all sessions
+   */
+  async closeAll() {
+    this.emit('debug', `Closing all sessions (${this.sessions.size})...`);
+
+    const closePromises = Array.from(this.sessions.keys()).map(userId =>
+      this.closeSession(userId).catch(err =>
+        this.emit('warn', `Failed to close session ${userId}: ${err.message}`)
+      )
+    );
+
+    await Promise.all(closePromises);
+    this.emit('debug', 'All sessions closed');
+  }
+
+  /**
+   * Get session status for user
+   * @param {string} userId - User identifier
+   * @returns {object|null} - Session status or null if not found
+   */
+  getSessionStatus(userId) {
+    const session = this.sessions.get(userId);
+    if (!session) return null;
+    return session.getStatus();
+  }
+
+  /**
+   * Get all active sessions
+   * @returns {Array} - Array of session info
+   */
+  getAllSessions() {
+    return Array.from(this.sessions.entries()).map(([userId, session]) => ({
+      userId,
+      ...session.getStatus()
+    }));
+  }
+
+  /**
+   * Cleanup all sessions (alias for closeAll)
+   */
+  async cleanup() {
+    return this.closeAll();
+  }
+
+  /**
+   * Health check - test if Claude CLI is available and working
+   * @returns {Promise<object>} - Health check result
+   */
+  async healthCheck() {
+    try {
+      const claudePath = await this.findClaudeCli();
+
+      return {
+        healthy: true,
+        claudePath,
+        customEndpoint: this.customEndpoint,
+        activeSessions: this.sessions.size
+      };
+    } catch (error) {
+      return {
+        healthy: false,
+        error: error.message,
+        activeSessions: this.sessions.size
+      };
+    }
+  }
+}

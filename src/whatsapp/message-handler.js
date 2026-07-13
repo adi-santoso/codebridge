@@ -1,227 +1,299 @@
 /**
- * Message Handler
+ * Message Handler - Phase 5
  *
- * Routes WhatsApp messages to appropriate Claude sessions
+ * Routes messages from Socket.IO to SessionManager
  *
  * Flow:
- * 1. Receive WhatsApp message
- * 2. Extract user ID (phone number)
- * 3. Get or create Claude session for user
- * 4. Send message to Claude
- * 5. Return response to WhatsApp
+ * 1. Receive message from external WhatsApp gateway via Socket.IO
+ * 2. Check if message is a command (/newsession, /projects, etc.)
+ * 3. If command: Route to SessionCommands
+ * 4. If prompt: Route to SessionManager → DirectClaudeSpawner
+ * 5. Listen for 'response-ready' event from SessionManager
+ * 6. Send response back via Socket.IO
  */
 
 import { Logger } from '../utils/logger.js';
+import { CommandParser } from '../commands/parser.js';
+import { SessionCommands } from '../commands/session-commands.js';
 
 export class MessageHandler {
-  constructor(sessionManager, whatsappClient) {
-    this.sessionManager = sessionManager;
-    this.whatsappClient = whatsappClient;
+  /**
+   * Create MessageHandler instance
+   * @param {Object} options
+   * @param {SessionManager} options.sessionManager
+   * @param {string} [options.projectRootPath] - Root path for projects
+   */
+  constructor(options) {
+    this.sessionManager = options.sessionManager;
     this.logger = new Logger('MessageHandler');
 
-    // Command prefix (optional)
-    this.commandPrefix = '/';
+    // Session commands handler
+    this.sessionCommands = new SessionCommands({
+      sessionManager: this.sessionManager,
+      projectRootPath: options.projectRootPath
+    });
+
+    // Pending requests: requestId → { userId, resolve, reject, timestamp }
+    this.pendingRequests = new Map();
+
+    // Request timeout (120 seconds - Claude tools can take time)
+    this.requestTimeout = 120000;
+
+    // Setup event listeners
+    this.setupEventListeners();
   }
 
   /**
-   * Handle incoming WhatsApp message
-   *
-   * @param {Object} message - WhatsApp message object
+   * Setup event listeners for SessionManager
+   * @private
    */
-  async handleMessage(message) {
-    // Ignore group messages (optional)
-    if (message.from.includes('@g.us')) {
-      this.logger.debug('Ignoring group message');
-      return;
+  setupEventListeners() {
+    // Response ready - aggregate response from DirectClaudeSpawner
+    this.sessionManager.on('response-ready', ({ sessionId, userId, response, toolResults, stopReason }) => {
+      this.logger.info(`[${sessionId}] Response ready`);
+
+      // Find pending request for this user
+      const pending = this.findPendingRequest(userId);
+
+      if (pending) {
+        // Resolve with response
+        pending.resolve({
+          response,
+          toolResults,
+          stopReason,
+          sessionId
+        });
+
+        // Remove from pending
+        this.pendingRequests.delete(pending.requestId);
+      } else {
+        this.logger.warn(`No pending request found for user ${userId}`);
+      }
+    });
+
+    // Error handling
+    this.sessionManager.on('error', ({ sessionId, userId, error }) => {
+      this.logger.error(`[${sessionId}] Error:`, error.message);
+
+      // Find pending request
+      const pending = this.findPendingRequest(userId);
+
+      if (pending) {
+        pending.reject(error);
+        this.pendingRequests.delete(pending.requestId);
+      }
+    });
+  }
+
+  /**
+   * Handle incoming message
+   * @param {Object} data
+   * @param {string} data.userId - WhatsApp phone number (628xxx)
+   * @param {string} data.message - Message text
+   * @param {string} [data.requestId] - Optional request ID for tracking
+   * @returns {Promise<Object>} Response object
+   */
+  async handleMessage(data) {
+    const { userId, message, requestId = this.generateRequestId() } = data;
+
+    this.logger.info(`[${requestId}] Message from ${userId}: ${message.substring(0, 50)}...`);
+
+    try {
+      // Check if message is a command
+      if (CommandParser.isCommand(message)) {
+        return await this.handleCommand(userId, message, requestId);
+      }
+
+      // Regular prompt - route to SessionManager
+      return await this.handlePrompt(userId, message, requestId);
+
+    } catch (error) {
+      this.logger.error(`[${requestId}] Error:`, error.message);
+
+      return {
+        requestId,
+        error: error.message,
+        isError: true
+      };
     }
-
-    // Ignore messages from self
-    if (message.fromMe) {
-      this.logger.debug('Ignoring message from self');
-      return;
-    }
-
-    const userId = message.from; // Phone number with @c.us
-    const text = message.body.trim();
-
-    // Handle commands
-    if (text.startsWith(this.commandPrefix)) {
-      await this.handleCommand(userId, text);
-      return;
-    }
-
-    // Handle regular message -> send to Claude
-    await this.handleClaudeMessage(userId, text);
   }
 
   /**
    * Handle command message
-   *
-   * Commands:
-   * - /start - Start new session
-   * - /reset - Reset session
-   * - /help - Show help
+   * @private
    */
-  async handleCommand(userId, text) {
-    const command = text.split(' ')[0].toLowerCase();
-
-    this.logger.info('Command received:', { userId, command });
+  async handleCommand(userId, message, requestId) {
+    this.logger.info(`[${requestId}] Processing command`);
 
     try {
-      switch (command) {
-        case '/start':
-          await this.handleStartCommand(userId);
-          break;
+      // Execute command
+      const response = await this.sessionCommands.execute(userId, message);
 
-        case '/reset':
-          await this.handleResetCommand(userId);
-          break;
-
-        case '/help':
-          await this.handleHelpCommand(userId);
-          break;
-
-        default:
-          await this.whatsappClient.sendMessage(
-            userId,
-            `Unknown command: ${command}\n\nType /help for available commands.`
-          );
-      }
-    } catch (error) {
-      this.logger.error('Command error:', error);
-      await this.whatsappClient.sendMessage(
-        userId,
-        '❌ Error processing command. Please try again.'
-      );
-    }
-  }
-
-  /**
-   * Handle /start command
-   */
-  async handleStartCommand(userId) {
-    await this.whatsappClient.sendMessage(
-      userId,
-      '👋 Welcome to CodeBridge!\n\n' +
-      'I\'m your AI coding assistant powered by Claude.\n\n' +
-      'Just send me your coding questions or tasks, and I\'ll help you!\n\n' +
-      'Commands:\n' +
-      '/help - Show this message\n' +
-      '/reset - Start fresh session'
-    );
-  }
-
-  /**
-   * Handle /reset command
-   */
-  async handleResetCommand(userId) {
-    if (this.sessionManager.hasSession(userId)) {
-      await this.sessionManager.closeSession(userId);
-      await this.whatsappClient.sendMessage(
-        userId,
-        '🔄 Session reset. Starting fresh!'
-      );
-    } else {
-      await this.whatsappClient.sendMessage(
-        userId,
-        'No active session to reset.'
-      );
-    }
-  }
-
-  /**
-   * Handle /help command
-   */
-  async handleHelpCommand(userId) {
-    await this.whatsappClient.sendMessage(
-      userId,
-      '📖 *CodeBridge Help*\n\n' +
-      '*How to use:*\n' +
-      'Just send me any coding question or task!\n\n' +
-      '*Commands:*\n' +
-      '/start - Welcome message\n' +
-      '/reset - Reset your session\n' +
-      '/help - Show this help\n\n' +
-      '*Examples:*\n' +
-      '• "Create a React component for a login form"\n' +
-      '• "Explain how async/await works in JavaScript"\n' +
-      '• "Debug this code: [paste code]"'
-    );
-  }
-
-  /**
-   * Handle regular message -> route to Claude
-   */
-  async handleClaudeMessage(userId, text) {
-    this.logger.info('Routing to Claude:', { userId });
-
-    // Show typing indicator
-    await this.whatsappClient.sendTyping(userId);
-
-    try {
-      // Get or create session
-      if (!this.sessionManager.hasSession(userId)) {
-        this.logger.info('Creating new session for user:', userId);
-        await this.sessionManager.getOrCreateSession(userId);
-      }
-
-      // Send to Claude
-      this.logger.info('Sending to Claude...');
-      const response = await this.sessionManager.sendMessage(userId, text);
-
-      // Extract response text from notifications
-      const responseText = this.extractResponseText(response);
-
-      if (!responseText) {
-        throw new Error('No response from Claude');
-      }
-
-      // Send back to WhatsApp
-      await this.whatsappClient.sendMessage(userId, responseText);
-
-      this.logger.success('Response sent to user');
+      return {
+        requestId,
+        response,
+        isCommand: true,
+        isError: false
+      };
 
     } catch (error) {
-      this.logger.error('Error handling Claude message:', error);
+      this.logger.error(`[${requestId}] Command error:`, error.message);
 
-      await this.whatsappClient.sendMessage(
-        userId,
-        '❌ Sorry, I encountered an error processing your request.\n\n' +
-        'Error: ' + error.message + '\n\n' +
-        'Please try again or use /reset to start fresh.'
-      );
+      return {
+        requestId,
+        response: `❌ Command error: ${error.message}`,
+        isCommand: true,
+        isError: true
+      };
     }
   }
 
   /**
-   * Extract response text from Claude notifications
-   *
-   * @param {Object} response - Claude response with notifications
-   * @returns {string} Response text
+   * Handle prompt message
+   * @private
    */
-  extractResponseText(response) {
-    // Check if response has notifications
-    if (!response.notifications || response.notifications.length === 0) {
-      return null;
+  async handlePrompt(userId, message, requestId) {
+    this.logger.info(`[${requestId}] Processing prompt`);
+
+    // Get active session
+    const session = this.sessionManager.getActiveSession(userId);
+
+    if (!session) {
+      return {
+        requestId,
+        response: `👋 Welcome to CodeBridge!\n\n` +
+                  `I'm your AI coding assistant powered by Claude. To get started:\n\n` +
+                  `📋 *Session Management:*\n` +
+                  `/newsession - Create new session\n` +
+                  `/sessions - List all sessions\n` +
+                  `/session <id> - Switch to session\n` +
+                  `/closesession - Close current session\n\n` +
+                  `📁 *Project Management:*\n` +
+                  `/projects - List available projects\n` +
+                  `/project <name> - Select project\n\n` +
+                  `💬 *Other Commands:*\n` +
+                  `/clear - Clear session history\n` +
+                  `/status - Show current status\n` +
+                  `/help - Show this help\n\n` +
+                  `*Quick Start:*\n` +
+                  `1️⃣ Type: /newsession\n` +
+                  `2️⃣ Type: /projects\n` +
+                  `3️⃣ Type: /project <name>\n` +
+                  `4️⃣ Start chatting!\n\n` +
+                  `Let's build something amazing together! 🚀`,
+        isError: false
+      };
     }
 
-    // Find session/update notifications with text content
-    const textParts = [];
+    if (session.state !== 'PROJECT_SELECTED') {
+      return {
+        requestId,
+        response: `📁 *Project Selection Required*\n\n` +
+                  `You have an active session, but no project selected yet.\n\n` +
+                  `To select a project:\n` +
+                  `1️⃣ Type: /projects (to see available projects)\n` +
+                  `2️⃣ Type: /project <name> (to select one)\n\n` +
+                  `Example: /project codebridge\n\n` +
+                  `Once a project is selected, I can help you with:\n` +
+                  `• Writing and reviewing code\n` +
+                  `• Debugging issues\n` +
+                  `• Explaining concepts\n` +
+                  `• Refactoring code\n` +
+                  `• And much more!`,
+        isError: false
+      };
+    }
 
-    for (const notification of response.notifications) {
-      if (notification.method === 'session/update' && notification.params) {
-        // Look for text in updates
-        const updates = notification.params.updates || [];
+    // Create promise that resolves when response is ready
+    const responsePromise = new Promise((resolve, reject) => {
+      // Store pending request
+      this.pendingRequests.set(requestId, {
+        userId,
+        sessionId: session.sessionId,
+        resolve,
+        reject,
+        timestamp: Date.now()
+      });
 
-        for (const update of updates) {
-          if (update.type === 'text' && update.content) {
-            textParts.push(update.content);
-          }
+      // Set timeout
+      setTimeout(() => {
+        if (this.pendingRequests.has(requestId)) {
+          this.pendingRequests.delete(requestId);
+          reject(new Error('Request timeout'));
         }
+      }, this.requestTimeout);
+    });
+
+    try {
+      // Send message to SessionManager (non-blocking)
+      // Response will come via 'response-ready' event
+      await this.sessionManager.sendMessage(userId, session.sessionId, message);
+
+      // Wait for response
+      const result = await responsePromise;
+
+      return {
+        requestId,
+        response: result.response,
+        toolResults: result.toolResults,
+        stopReason: result.stopReason,
+        sessionId: result.sessionId,
+        isError: false
+      };
+
+    } catch (error) {
+      this.logger.error(`[${requestId}] Prompt error:`, error.message);
+
+      return {
+        requestId,
+        response: `❌ Error: ${error.message}`,
+        isError: true
+      };
+    }
+  }
+
+  /**
+   * Find pending request by userId
+   * @private
+   */
+  findPendingRequest(userId) {
+    for (const [requestId, data] of this.pendingRequests.entries()) {
+      if (data.userId === userId) {
+        return { requestId, ...data };
       }
     }
+    return null;
+  }
 
-    return textParts.join('\n').trim();
+  /**
+   * Generate request ID
+   * @private
+   */
+  generateRequestId() {
+    return `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  }
+
+  /**
+   * Cleanup old pending requests (called periodically)
+   */
+  cleanupPendingRequests() {
+    const now = Date.now();
+    const timeout = this.requestTimeout;
+
+    for (const [requestId, data] of this.pendingRequests.entries()) {
+      if (now - data.timestamp > timeout) {
+        this.logger.warn(`Cleaning up timed out request: ${requestId}`);
+        data.reject(new Error('Request timeout'));
+        this.pendingRequests.delete(requestId);
+      }
+    }
+  }
+
+  /**
+   * Get pending request count
+   */
+  getPendingRequestCount() {
+    return this.pendingRequests.size;
   }
 }
 

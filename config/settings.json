@@ -1,0 +1,30 @@
+{
+  "bridge": {
+    "name": "CodeBridge",
+    "version": "1.0.0",
+    "instanceMode": "per-user"
+  },
+  "whatsapp": {
+    "pollingInterval": 2000,
+    "useWebhook": false,
+    "webhookPort": 3001,
+    "messageFormat": "markdown"
+  },
+  "claude": {
+    "responseTimeout": 120000,
+    "maxTokens": 4096,
+    "temperature": 1.0,
+    "streamResponses": false
+  },
+  "security": {
+    "requireWhitelist": true,
+    "logAllMessages": true,
+    "sanitizeInput": true
+  },
+  "features": {
+    "projectSwitching": true,
+    "sessionPersistence": true,
+    "autoCleanup": true,
+    "commandSystem": true
+  }
+}

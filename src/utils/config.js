@@ -5,9 +5,16 @@
  */
 
 export const config = {
-  // Claude API Configuration
+  // Anthropic/Claude Configuration
+  anthropic: {
+    apiKey: process.env.ANTHROPIC_API_KEY || 'kv-10f188b357d5f639fced98fe4c6934f8dc561c25c7d98be9',
+    customEndpoint: process.env.ANTHROPIC_BASE_URL || 'http://127.0.0.1:3847/',
+    model: process.env.CLAUDE_MODEL || 'kiro-claude-sonnet-4.5',
+  },
+
+  // Legacy aliases (backward compatibility)
   claude: {
-    apiKey: process.env.ANTHROPIC_API_KEY || 'kv-27bc3e239790219561fefcc4d66e1912cd879e1035e4d54d',
+    apiKey: process.env.ANTHROPIC_API_KEY || 'kv-10f188b357d5f639fced98fe4c6934f8dc561c25c7d98be9',
     baseUrl: process.env.ANTHROPIC_BASE_URL || 'http://127.0.0.1:3847/',
     model: process.env.CLAUDE_MODEL || 'kiro-claude-sonnet-4.5',
   },
@@ -21,7 +28,8 @@ export const config = {
 
   // Project Configuration
   project: {
-    defaultCwd: process.cwd(),
+    defaultPath: process.env.PROJECT_PATH || process.cwd(),
+    defaultCwd: process.cwd(), // Legacy alias
   },
 
   // Debug Mode

@@ -1,137 +1,439 @@
 /**
- * Session Manager
+ * Session Manager - Phase 5
  *
- * High-level API for managing per-user Claude sessions
- *
- * This provides a cleaner interface on top of ACPClient:
- * - Automatic session creation
- * - Multi-turn conversation support
- * - Session cleanup
+ * Manages multiple sessions per user with DirectClaudeSpawner
+ * - Session persistence via SQLite
+ * - Session state machine (NO_SESSION → SESSION_SELECTED → PROJECT_SELECTED)
+ * - Multiple sessions per user with explicit routing
+ * - Event-based response aggregation
+ * - Tool execution via ToolExecutor
  */
 
-import { ACPClient } from './acp-client.js';
+import { EventEmitter } from 'events';
+import { DirectClaudeSpawner } from './direct-spawner.js';
+import { SessionDatabase } from '../database/session-db.js';
+import { ToolExecutor } from '../tools/executor.js';
 import { Logger } from '../utils/logger.js';
 
-export class SessionManager {
-  constructor() {
+export class SessionManager extends EventEmitter {
+  /**
+   * Create SessionManager instance
+   * @param {Object} options
+   * @param {string} [options.dbPath='./.codebridge/sessions.db'] - SQLite database path
+   */
+  constructor(options = {}) {
+    super();
+
     this.logger = new Logger('SessionManager');
-    this.sessions = new Map();  // userId -> { client, sessionId }
+
+    // SQLite database for session persistence
+    this.db = new SessionDatabase({
+      path: options.dbPath || process.env.SESSION_DB_PATH || './.codebridge/sessions.db'
+    });
+
+    // DirectClaudeSpawner instances: sessionId → spawner
+    this.spawners = new Map();
+
+    // ToolExecutor instances: sessionId → executor
+    this.executors = new Map();
+
+    // Active session per user: userId → sessionId
+    this.activeSessionMap = new Map();
+
+    // Response aggregation: sessionId → { text: '', toolResults: [] }
+    this.responseBuffers = new Map();
+
+    this.logger.success('SessionManager constructor initialized');
   }
 
   /**
-   * Get or create session for user
-   *
-   * @param {string} userId - User identifier (e.g., phone number)
-   * @param {Object} options - Session options
-   * @returns {Promise<Object>} Session info
+   * Initialize SessionManager - async initialization
    */
-  async getOrCreateSession(userId, options = {}) {
-    // Check if session already exists
-    if (this.sessions.has(userId)) {
-      this.logger.info('Reusing existing session for user:', userId);
-      return this.sessions.get(userId);
+  async initialize() {
+    this.logger.info('Initializing SessionManager...');
+
+    // Database is already initialized in constructor
+    // Add any async initialization here if needed in the future
+
+    this.logger.success('SessionManager initialized and ready');
+  }
+
+  /**
+   * Get active session for user
+   * @param {string} userId - WhatsApp phone number
+   * @returns {Object|null} Session object or null
+   */
+  getActiveSession(userId) {
+    const sessionId = this.activeSessionMap.get(userId);
+    if (!sessionId) {
+      return null;
     }
 
-    // Create new session
-    this.logger.info('Creating new session for user:', userId);
+    return this.db.getSessionById(sessionId);
+  }
 
-    const client = new ACPClient(options);
-    await client.spawn();
+  /**
+   * Create new session for user
+   * @param {string} userId - WhatsApp phone number
+   * @returns {Object} Created session
+   */
+  createSession(userId) {
+    const sessionId = this.db.generateSessionId();
 
-    const sessionId = await client.createSession(options);
+    this.logger.info(`Creating new session ${sessionId} for user ${userId}`);
 
-    const session = {
-      userId,
-      client,
-      sessionId,
-      createdAt: Date.now()
-    };
+    // Create session in database
+    const session = this.db.createSession(userId, sessionId);
 
-    this.sessions.set(userId, session);
+    // Set as active session
+    this.activeSessionMap.set(userId, sessionId);
 
-    this.logger.success('Session created for user:', userId);
+    this.logger.success(`Session created: ${sessionId}`);
+
+    // Emit session-created event for room management
+    this.emit('session-created', { sessionId, userId });
+
     return session;
   }
 
   /**
-   * Send message to user's session
-   *
-   * @param {string} userId - User identifier
-   * @param {string} message - Message text
-   * @returns {Promise<Object>} Response
+   * Switch to specific session
+   * @param {string} userId
+   * @param {string} sessionId
+   * @returns {Object} Session object
    */
-  async sendMessage(userId, message) {
-    const session = this.sessions.get(userId);
+  switchSession(userId, sessionId) {
+    const session = this.db.getSessionById(sessionId);
 
     if (!session) {
-      throw new Error(`No session found for user: ${userId}`);
+      throw new Error(`Session not found: ${sessionId}`);
     }
 
-    this.logger.info('Sending message to user:', userId);
-    this.logger.debug('Message:', message);
+    if (session.userId !== userId) {
+      throw new Error(`Session ${sessionId} does not belong to user ${userId}`);
+    }
 
-    const response = await session.client.sendPrompt(session.sessionId, message);
+    // Update active session
+    this.activeSessionMap.set(userId, sessionId);
 
-    return response;
+    // Touch session
+    this.db.touchSession(sessionId);
+
+    this.logger.info(`User ${userId} switched to session ${sessionId}`);
+
+    return session;
   }
 
   /**
-   * Close session for user
-   *
-   * @param {string} userId - User identifier
+   * Get all sessions for user
+   * @param {string} userId
+   * @returns {Array<Object>}
    */
-  async closeSession(userId) {
-    const session = this.sessions.get(userId);
+  getUserSessions(userId) {
+    return this.db.getUserSessions(userId);
+  }
+
+  /**
+   * Set project for session
+   * @param {string} sessionId
+   * @param {string} projectPath - Absolute path to project
+   */
+  setSessionProject(sessionId, projectPath) {
+    this.logger.info(`Setting project for session ${sessionId}: ${projectPath}`);
+
+    // Update database
+    this.db.setSessionProject(sessionId, projectPath);
+
+    // Create DirectClaudeSpawner for this session
+    const spawner = new DirectClaudeSpawner({
+      projectPath
+    });
+
+    // Setup event handlers
+    this.setupSpawnerEvents(sessionId, spawner);
+
+    // Store spawner
+    this.spawners.set(sessionId, spawner);
+
+    // Create ToolExecutor
+    const executor = new ToolExecutor({ projectPath });
+    this.executors.set(sessionId, executor);
+
+    this.logger.success(`Project set for session ${sessionId}`);
+  }
+
+  /**
+   * Setup event handlers for DirectClaudeSpawner
+   * @private
+   */
+  setupSpawnerEvents(sessionId, spawner) {
+    // Text delta - aggregate response
+    spawner.on('text', ({ userId, text }) => {
+      if (!this.responseBuffers.has(sessionId)) {
+        this.responseBuffers.set(sessionId, { text: '', toolResults: [] });
+      }
+
+      const buffer = this.responseBuffers.get(sessionId);
+      buffer.text += text;
+    });
+
+    // Tool use - execute tool and send result back
+    spawner.on('tool-use', async ({ userId, tool }) => {
+      this.logger.info(`[${sessionId}] Tool use: ${tool.name}`);
+
+      try {
+        const executor = this.executors.get(sessionId);
+        const result = await executor.execute(tool);
+
+        // Send tool result back to Claude
+        spawner.sendToolResult(userId, tool.id, result.content, result.isError);
+
+        // Store tool result in buffer
+        const buffer = this.responseBuffers.get(sessionId);
+        if (buffer) {
+          buffer.toolResults.push({
+            toolName: tool.name,
+            toolId: tool.id,
+            result: result.content,
+            isError: result.isError
+          });
+        }
+      } catch (error) {
+        this.logger.error(`[${sessionId}] Tool execution error:`, error.message);
+
+        // Send error back to Claude
+        spawner.sendToolResult(userId, tool.id, `Tool execution error: ${error.message}`, true);
+      }
+    });
+
+    // Turn end - emit aggregated response
+    spawner.on('turn-end', ({ userId, stopReason }) => {
+      this.logger.info(`[${sessionId}] Turn ended: ${stopReason}`);
+
+      const buffer = this.responseBuffers.get(sessionId);
+
+      if (buffer) {
+        // Emit response ready event
+        this.emit('response-ready', {
+          sessionId,
+          userId,
+          response: buffer.text,
+          toolResults: buffer.toolResults,
+          stopReason
+        });
+
+        // Clear buffer
+        this.responseBuffers.delete(sessionId);
+      }
+
+      // Touch session (update lastActive)
+      this.db.touchSession(sessionId);
+    });
+
+    // Error handling
+    spawner.on('error', ({ userId, error }) => {
+      this.logger.error(`[${sessionId}] Error:`, error.message);
+
+      this.emit('error', {
+        sessionId,
+        userId,
+        error
+      });
+    });
+
+    // Debug logging
+    spawner.on('debug', ({ userId, message }) => {
+      this.logger.debug(`[${sessionId}] ${message}`);
+    });
+  }
+
+  /**
+   * Send message to session
+   * @param {string} userId
+   * @param {string} sessionId
+   * @param {string} message
+   */
+  async sendMessage(userId, sessionId, message) {
+    const session = this.db.getSessionById(sessionId);
 
     if (!session) {
-      this.logger.warn('No session to close for user:', userId);
-      return;
+      throw new Error(`Session not found: ${sessionId}`);
     }
 
-    this.logger.info('Closing session for user:', userId);
-
-    await session.client.closeSession(session.sessionId);
-    await session.client.shutdown();
-
-    this.sessions.delete(userId);
-
-    this.logger.success('Session closed for user:', userId);
-  }
-
-  /**
-   * Close all sessions
-   */
-  async closeAllSessions() {
-    this.logger.info('Closing all sessions...');
-
-    const userIds = Array.from(this.sessions.keys());
-
-    for (const userId of userIds) {
-      await this.closeSession(userId);
+    if (session.state !== 'PROJECT_SELECTED') {
+      throw new Error(`Session ${sessionId} has no project selected`);
     }
 
-    this.logger.success('All sessions closed');
+    const spawner = this.spawners.get(sessionId);
+
+    if (!spawner) {
+      throw new Error(`No spawner for session ${sessionId}. Project may not be set correctly.`);
+    }
+
+    // Initialize response buffer
+    this.responseBuffers.set(sessionId, { text: '', toolResults: [] });
+
+    // Create or get Claude session
+    let claudeSession = spawner.sessions.get(userId);
+    if (!claudeSession) {
+      claudeSession = await spawner.createSession(userId);
+    }
+
+    // Send message
+    await claudeSession.sendPrompt(message);
   }
 
   /**
-   * Get active session count
+   * Close session
+   * @param {string} sessionId
    */
-  getActiveSessionCount() {
-    return this.sessions.size;
+  async closeSession(sessionId) {
+    this.logger.info(`Closing session ${sessionId}`);
+
+    // Get session info before deletion (for event emit)
+    const session = this.db.getSessionById(sessionId);
+    const userId = session?.userId;
+
+    // Get spawner
+    const spawner = this.spawners.get(sessionId);
+
+    if (spawner) {
+      // Close all Claude sessions in this spawner
+      await spawner.closeAll();
+
+      // Remove from map
+      this.spawners.delete(sessionId);
+    }
+
+    // Remove executor
+    this.executors.delete(sessionId);
+
+    // Remove response buffer
+    this.responseBuffers.delete(sessionId);
+
+    // Remove from activeSessionMap
+    for (const [uid, activeSessionId] of this.activeSessionMap.entries()) {
+      if (activeSessionId === sessionId) {
+        this.activeSessionMap.delete(uid);
+      }
+    }
+
+    // Delete from database
+    this.db.deleteSession(sessionId);
+
+    this.logger.success(`Session closed: ${sessionId}`);
+
+    // Emit session-closed event for room management
+    if (userId) {
+      this.emit('session-closed', { sessionId, userId });
+    }
   }
 
   /**
-   * Get all active user IDs
+   * Close all sessions for user
+   * @param {string} userId
    */
-  getActiveUsers() {
-    return Array.from(this.sessions.keys());
+  async closeUserSessions(userId) {
+    const sessions = this.db.getUserSessions(userId);
+
+    for (const session of sessions) {
+      await this.closeSession(session.sessionId);
+    }
+
+    this.activeSessionMap.delete(userId);
+
+    this.logger.info(`All sessions closed for user ${userId}`);
   }
 
   /**
-   * Check if user has active session
+   * Get session status
+   * @param {string} sessionId
+   * @returns {Object}
    */
-  hasSession(userId) {
-    return this.sessions.has(userId);
+  getSessionStatus(sessionId) {
+    const session = this.db.getSessionById(sessionId);
+
+    if (!session) {
+      return { exists: false };
+    }
+
+    const spawner = this.spawners.get(sessionId);
+
+    return {
+      exists: true,
+      session,
+      hasSpawner: !!spawner,
+      spawnerSessions: spawner ? spawner.getAllSessions() : []
+    };
+  }
+
+  /**
+   * Cleanup old inactive sessions
+   * @param {number} days - Days of inactivity
+   */
+  async cleanupOldSessions(days = 30) {
+    const count = this.db.cleanupOldSessions(days);
+    this.logger.info(`Cleaned up ${count} old sessions`);
+    return count;
+  }
+
+  /**
+   * Get all sessions from database
+   * @returns {Array} Array of all sessions
+   */
+  getAllSessions() {
+    return this.db.getAllSessions();
+  }
+
+  /**
+   * Get total session count
+   * @returns {number} Total sessions
+   */
+  getTotalSessions() {
+    const sessions = this.db.getAllSessions();
+    return sessions ? sessions.length : 0;
+  }
+
+  /**
+   * Get active sessions
+   * @returns {Array} Array of active sessions
+   */
+  getActiveSessions() {
+    return Array.from(this.activeSessionMap.entries()).map(([userId, sessionId]) => {
+      const session = this.db.getSessionById(sessionId);
+      return { userId, sessionId, session };
+    }).filter(item => item.session !== null);
+  }
+
+  /**
+   * Get session by ID (alias for db method)
+   * @param {string} sessionId
+   * @returns {Object|null} Session object or null
+   */
+  getSession(sessionId) {
+    return this.db.getSessionById(sessionId);
+  }
+
+  /**
+   * Close all sessions and database
+   */
+  async shutdown() {
+    this.logger.info('Shutting down SessionManager...');
+
+    // Close all spawners
+    for (const [sessionId, spawner] of this.spawners.entries()) {
+      await spawner.closeAll();
+    }
+
+    this.spawners.clear();
+    this.executors.clear();
+    this.responseBuffers.clear();
+    this.activeSessionMap.clear();
+
+    // Close database
+    this.db.close();
+
+    this.logger.success('SessionManager shut down');
   }
 }
 
