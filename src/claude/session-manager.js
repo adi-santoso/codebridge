@@ -52,10 +52,87 @@ export class SessionManager extends EventEmitter {
   async initialize() {
     this.logger.info('Initializing SessionManager...');
 
-    // Database is already initialized in constructor
-    // Add any async initialization here if needed in the future
+    // Restore active sessions from database
+    await this.restoreActiveSessions();
 
     this.logger.success('SessionManager initialized and ready');
+  }
+
+  /**
+   * Restore active sessions from database on startup
+   * Spawns Claude subprocesses for sessions with PROJECT_SELECTED state
+   * @private
+   */
+  async restoreActiveSessions() {
+    try {
+      // Get all sessions from database
+      const allSessions = this.db.getAllSessions();
+
+      if (allSessions.length === 0) {
+        this.logger.info('No sessions to restore');
+        return;
+      }
+
+      this.logger.info(`Found ${allSessions.length} sessions in database, checking which to restore...`);
+
+      let restoredCount = 0;
+      let skippedCount = 0;
+
+      for (const session of allSessions) {
+        // Only restore sessions that have project selected (ready to code)
+        if (session.state !== 'PROJECT_SELECTED') {
+          this.logger.debug(`Skipping session ${session.sessionId} (state: ${session.state})`);
+          skippedCount++;
+          continue;
+        }
+
+        // Only restore if there's an active session set for this user
+        const currentActiveSession = this.activeSessionMap.get(session.userId);
+        if (currentActiveSession && currentActiveSession !== session.sessionId) {
+          this.logger.debug(`Skipping session ${session.sessionId} (not active for user ${session.userId})`);
+          skippedCount++;
+          continue;
+        }
+
+        try {
+          this.logger.info(`Restoring session: ${session.sessionId} for user ${session.userId}`);
+
+          // Spawn Claude subprocess
+          const spawner = new DirectClaudeSpawner({
+            projectPath: session.projectPath,
+            sessionId: session.sessionId
+          });
+
+          // Setup event handlers
+          this.setupSpawnerEvents(spawner, session.sessionId, session.userId);
+
+          // Store spawner
+          this.spawners.set(session.sessionId, spawner);
+
+          // Create ToolExecutor
+          const executor = new ToolExecutor({
+            projectPath: session.projectPath,
+            sessionId: session.sessionId
+          });
+          this.executors.set(session.sessionId, executor);
+
+          // Restore active session mapping
+          this.activeSessionMap.set(session.userId, session.sessionId);
+
+          restoredCount++;
+          this.logger.success(`Session ${session.sessionId} restored successfully`);
+
+        } catch (error) {
+          this.logger.error(`Failed to restore session ${session.sessionId}:`, error.message);
+          skippedCount++;
+        }
+      }
+
+      this.logger.success(`Session restoration complete: ${restoredCount} restored, ${skippedCount} skipped`);
+
+    } catch (error) {
+      this.logger.error('Failed to restore sessions:', error.message);
+    }
   }
 
   /**
