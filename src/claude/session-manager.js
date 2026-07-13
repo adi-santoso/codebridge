@@ -227,7 +227,8 @@ export class SessionManager extends EventEmitter {
     });
 
     // Setup event handlers
-    this.setupSpawnerEvents(sessionId, spawner);
+    const session = this.db.getSessionById(sessionId);
+    this.setupSpawnerEvents(spawner, sessionId, session.userId);
 
     // Store spawner
     this.spawners.set(sessionId, spawner);
@@ -243,7 +244,7 @@ export class SessionManager extends EventEmitter {
    * Setup event handlers for DirectClaudeSpawner
    * @private
    */
-  setupSpawnerEvents(sessionId, spawner) {
+  setupSpawnerEvents(spawner, sessionId, userId) {
     // Text delta - aggregate response
     spawner.on('text', ({ userId, text }) => {
       if (!this.responseBuffers.has(sessionId)) {
@@ -356,8 +357,18 @@ export class SessionManager extends EventEmitter {
       claudeSession = await spawner.createSession(userId);
     }
 
-    // Send message
-    await claudeSession.sendPrompt(message);
+    // Prepend WhatsApp formatting instructions to user message
+    const enhancedMessage = `[SYSTEM: WhatsApp chat interface - mobile screen, vertical scroll, tedious copy-paste.
+FORMAT: *bold* for emphasis, _italic_ secondary, \`code\` inline, \`\`\`lang for blocks.
+CONSTRAINTS: Max 4000 chars per message, prioritize actionable info.
+STYLE: Short paragraphs (3-4 lines max), bullet points (• or -), scannable layout.
+EMOJIS: Minimal use for visual cues only.
+PATHS: Use backticks. COMMANDS: Use code blocks.]
+
+${message}`;
+
+    // Send enhanced message
+    await claudeSession.sendPrompt(enhancedMessage);
   }
 
   /**
@@ -420,6 +431,49 @@ export class SessionManager extends EventEmitter {
     this.activeSessionMap.delete(userId);
 
     this.logger.info(`All sessions closed for user ${userId}`);
+  }
+
+  /**
+   * Clear session conversation history
+   * Restart spawner to reset Claude context
+   * @param {string} sessionId
+   */
+  async clearSessionHistory(sessionId) {
+    this.logger.info(`Clearing history for session ${sessionId}`);
+
+    const session = this.db.getSessionById(sessionId);
+    if (!session) {
+      throw new Error(`Session not found: ${sessionId}`);
+    }
+
+    if (session.state !== 'PROJECT_SELECTED') {
+      throw new Error('Cannot clear history - no project selected');
+    }
+
+    // Get existing spawner
+    const oldSpawner = this.spawners.get(sessionId);
+
+    if (oldSpawner) {
+      // Close old spawner
+      await oldSpawner.closeAll();
+    }
+
+    // Create fresh spawner
+    const newSpawner = new DirectClaudeSpawner({
+      projectPath: session.projectPath,
+      sessionId: sessionId
+    });
+
+    // Setup event handlers
+    this.setupSpawnerEvents(newSpawner, sessionId, session.userId);
+
+    // Replace spawner
+    this.spawners.set(sessionId, newSpawner);
+
+    // Clear response buffer
+    this.responseBuffers.delete(sessionId);
+
+    this.logger.success(`Session history cleared: ${sessionId}`);
   }
 
   /**

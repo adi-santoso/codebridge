@@ -61,11 +61,17 @@ export class SessionCommands {
       case 'session':
         return this.handleSwitchSession(userId, args[0]);
 
+      case 'closesession':
+        return this.handleCloseSession(userId);
+
       case 'projects':
         return this.handleListProjects();
 
       case 'project':
         return this.handleSelectProject(userId, rawArgs);
+
+      case 'clear':
+        return this.handleClearHistory(userId);
 
       case 'status':
         return this.handleStatus(userId);
@@ -217,6 +223,64 @@ export class SessionCommands {
              `- "Show me the main entry point"`;
     } catch (error) {
       return `❌ Failed to select project: ${error.message}`;
+    }
+  }
+
+  /**
+   * Handle /closesession command
+   * @private
+   */
+  handleCloseSession(userId) {
+    try {
+      const session = this.sessionManager.getActiveSession(userId);
+
+      if (!session) {
+        return `❌ No active session to close\n\n` +
+               `Type /newsession to create a session.`;
+      }
+
+      const sessionId = session.sessionId;
+      const projectName = session.projectPath ? basename(session.projectPath) : 'None';
+
+      // Close session
+      this.sessionManager.closeSession(sessionId);
+
+      return `✅ Session closed: ${sessionId}\n` +
+             `Project: ${projectName}\n\n` +
+             `Type /newsession to create a new session, or\n` +
+             `Type /sessions to see and switch to another session.`;
+    } catch (error) {
+      return `❌ Failed to close session: ${error.message}`;
+    }
+  }
+
+  /**
+   * Handle /clear command
+   * @private
+   */
+  handleClearHistory(userId) {
+    try {
+      const session = this.sessionManager.getActiveSession(userId);
+
+      if (!session) {
+        return `❌ No active session\n\n` +
+               `Type /newsession to create a session.`;
+      }
+
+      if (session.state !== 'PROJECT_SELECTED') {
+        return `❌ Cannot clear history - no project selected\n\n` +
+               `Type /projects to see available projects, then\n` +
+               `Type /project <name> to select one.`;
+      }
+
+      // Clear conversation history by restarting spawner
+      this.sessionManager.clearSessionHistory(session.sessionId);
+
+      return `✅ Session history cleared\n\n` +
+             `Your coding session has been reset with a fresh context.\n` +
+             `You can continue with new prompts.`;
+    } catch (error) {
+      return `❌ Failed to clear history: ${error.message}`;
     }
   }
 

@@ -12,11 +12,12 @@
  * 6. Send response back via Socket.IO
  */
 
+import { EventEmitter } from 'events';
 import { Logger } from '../utils/logger.js';
 import { CommandParser } from '../commands/parser.js';
 import { SessionCommands } from '../commands/session-commands.js';
 
-export class MessageHandler {
+export class MessageHandler extends EventEmitter {
   /**
    * Create MessageHandler instance
    * @param {Object} options
@@ -24,6 +25,8 @@ export class MessageHandler {
    * @param {string} [options.projectRootPath] - Root path for projects
    */
   constructor(options) {
+    super(); // Initialize EventEmitter
+
     this.sessionManager = options.sessionManager;
     this.logger = new Logger('MessageHandler');
 
@@ -48,20 +51,22 @@ export class MessageHandler {
    * @private
    */
   setupEventListeners() {
-    // Response ready - aggregate response from DirectClaudeSpawner
+    // Response ready - emit to parent (main.js will handle sending to Gateway)
     this.sessionManager.on('response-ready', ({ sessionId, userId, response, toolResults, stopReason }) => {
-      this.logger.info(`[${sessionId}] Response ready`);
+      this.logger.info(`[${sessionId}] Response ready from async processing`);
 
-      // Find pending request for this user
+      // Find pending request for this user (to get gatewaySessionId)
       const pending = this.findPendingRequest(userId);
 
       if (pending) {
-        // Resolve with response
-        pending.resolve({
+        // Emit event for main.js to handle delivery
+        this.emit('async-response', {
+          userId,
+          sessionId,
+          gatewaySessionId: pending.gatewaySessionId,
           response,
           toolResults,
-          stopReason,
-          sessionId
+          stopReason
         });
 
         // Remove from pending
@@ -79,7 +84,14 @@ export class MessageHandler {
       const pending = this.findPendingRequest(userId);
 
       if (pending) {
-        pending.reject(error);
+        // Emit error event for main.js to handle delivery
+        this.emit('async-error', {
+          userId,
+          sessionId,
+          gatewaySessionId: pending.gatewaySessionId,
+          error: error.message
+        });
+
         this.pendingRequests.delete(pending.requestId);
       }
     });
@@ -91,10 +103,11 @@ export class MessageHandler {
    * @param {string} data.userId - WhatsApp phone number (628xxx)
    * @param {string} data.message - Message text
    * @param {string} [data.requestId] - Optional request ID for tracking
+   * @param {string} [data.gatewaySessionId] - Gateway session ID for async reply routing
    * @returns {Promise<Object>} Response object
    */
   async handleMessage(data) {
-    const { userId, message, requestId = this.generateRequestId() } = data;
+    const { userId, message, requestId = this.generateRequestId(), gatewaySessionId } = data;
 
     this.logger.info(`[${requestId}] Message from ${userId}: ${message.substring(0, 50)}...`);
 
@@ -105,7 +118,7 @@ export class MessageHandler {
       }
 
       // Regular prompt - route to SessionManager
-      return await this.handlePrompt(userId, message, requestId);
+      return await this.handlePrompt(userId, message, requestId, gatewaySessionId);
 
     } catch (error) {
       this.logger.error(`[${requestId}] Error:`, error.message);
@@ -149,10 +162,10 @@ export class MessageHandler {
   }
 
   /**
-   * Handle prompt message
+   * Handle prompt message - TRUE ASYNC (no blocking wait)
    * @private
    */
-  async handlePrompt(userId, message, requestId) {
+  async handlePrompt(userId, message, requestId, gatewaySessionId) {
     this.logger.info(`[${requestId}] Processing prompt`);
 
     // Get active session
@@ -204,45 +217,32 @@ export class MessageHandler {
       };
     }
 
-    // Create promise that resolves when response is ready
-    const responsePromise = new Promise((resolve, reject) => {
-      // Store pending request
+    try {
+      // Store request metadata (for tracking + gateway routing)
       this.pendingRequests.set(requestId, {
         userId,
         sessionId: session.sessionId,
-        resolve,
-        reject,
+        gatewaySessionId, // Store for async response routing
         timestamp: Date.now()
       });
 
-      // Set timeout
-      setTimeout(() => {
-        if (this.pendingRequests.has(requestId)) {
-          this.pendingRequests.delete(requestId);
-          reject(new Error('Request timeout'));
-        }
-      }, this.requestTimeout);
-    });
-
-    try {
-      // Send message to SessionManager (non-blocking)
-      // Response will come via 'response-ready' event
+      // Send message to SessionManager (fire and forget)
+      // Response will come via 'response-ready' event and be sent directly by event handler
       await this.sessionManager.sendMessage(userId, session.sessionId, message);
 
-      // Wait for response
-      const result = await responsePromise;
-
+      // Return immediate acknowledgment
       return {
         requestId,
-        response: result.response,
-        toolResults: result.toolResults,
-        stopReason: result.stopReason,
-        sessionId: result.sessionId,
-        isError: false
+        response: `⏳ Processing your request...\n\nThis might take a moment depending on the complexity.`,
+        isError: false,
+        isQueued: true // Flag to indicate this is just acknowledgment
       };
 
     } catch (error) {
       this.logger.error(`[${requestId}] Prompt error:`, error.message);
+
+      // Cleanup
+      this.pendingRequests.delete(requestId);
 
       return {
         requestId,

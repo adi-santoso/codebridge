@@ -119,14 +119,15 @@ class CodeBridge {
         const result = await this.messageHandler.handleMessage({
           userId: data.from, // Phone number
           message: data.message,
-          requestId: `${data.sessionId}_${data.timestamp}`
+          requestId: `${data.sessionId}_${data.timestamp}`,
+          gatewaySessionId: data.sessionId // Gateway session ID for reply
         });
 
-        // Send response back to Gateway
+        // Send immediate response (acknowledgment or command result)
         if (result.response) {
           this.gatewayClient.sendResponse({
             sessionId: data.sessionId,
-            to: data.from, // Phone number to reply to
+            to: data.from,
             message: result.response,
             timestamp: Date.now()
           });
@@ -135,11 +136,14 @@ class CodeBridge {
             sessionId: data.sessionId,
             to: data.from,
             isError: result.isError,
+            isQueued: result.isQueued,
             responseLength: result.response.length
           });
         } else {
           this.logger.warn('[CodeBridge] No response to send', { result });
         }
+
+        // For queued prompts, actual response will come via 'async-response' event
 
       } catch (error) {
         this.logger.error('[CodeBridge] Error processing message', {
@@ -180,6 +184,47 @@ class CodeBridge {
         userId
       });
       this.sessionRoomManager.onSessionClosed(sessionId);
+    });
+
+    // Hook async response ready from MessageHandler (queue result delivery)
+    this.messageHandler.on('async-response', ({ userId, sessionId, gatewaySessionId, response }) => {
+      this.logger.info('[CodeBridge] Async response ready - delivering to user', {
+        sessionId,
+        gatewaySessionId,
+        userId,
+        responseLength: response.length
+      });
+
+      // Send async response to Gateway
+      this.gatewayClient.sendResponse({
+        sessionId: gatewaySessionId,
+        to: userId,
+        message: response,
+        timestamp: Date.now()
+      });
+
+      this.logger.success('[CodeBridge] Async response delivered', {
+        gatewaySessionId,
+        to: userId
+      });
+    });
+
+    // Hook async errors from MessageHandler
+    this.messageHandler.on('async-error', ({ userId, sessionId, gatewaySessionId, error }) => {
+      this.logger.error('[CodeBridge] Async error - delivering to user', {
+        sessionId,
+        gatewaySessionId,
+        userId,
+        error
+      });
+
+      // Send error message to Gateway
+      this.gatewayClient.sendResponse({
+        sessionId: gatewaySessionId,
+        to: userId,
+        message: `❌ Error: ${error}`,
+        timestamp: Date.now()
+      });
     });
 
     this.logger.info('[CodeBridge] Session hooks setup completed');
