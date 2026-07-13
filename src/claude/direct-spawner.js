@@ -2,7 +2,7 @@ import { spawn } from 'child_process';
 import { EventEmitter } from 'events';
 import { ClaudeStreamHandler } from './stream-handler.js';
 import which from 'which';
-import { readFileSync } from 'fs';
+import { readFileSync, realpathSync } from 'fs';
 import { join } from 'path';
 import os from 'os';
 
@@ -34,8 +34,16 @@ export class DirectClaudeSpawner extends EventEmitter {
   async findClaudeCli() {
     try {
       // Try to find 'claude' in PATH
-      const claudePath = await which('claude');
-      this.emit('debug', `Found Claude CLI at: ${claudePath}`);
+      let claudePath = await which('claude');
+
+      // Resolve symlink to actual binary
+      try {
+        claudePath = realpathSync(claudePath);
+        this.emit('debug', `Resolved Claude CLI symlink to: ${claudePath}`);
+      } catch (err) {
+        this.emit('debug', `Could not resolve symlink, using: ${claudePath}`);
+      }
+
       return claudePath;
     } catch (error) {
       // Check common installation paths
@@ -43,15 +51,26 @@ export class DirectClaudeSpawner extends EventEmitter {
         'C:\\Program Files\\Claude\\claude.exe',
         'C:\\Users\\' + process.env.USERNAME + '\\AppData\\Local\\Programs\\Claude\\claude.exe',
         '/usr/local/bin/claude',
-        '/opt/claude/bin/claude'
+        '/opt/claude/bin/claude',
+        '/home/deploy/.local/bin/claude',  // Add deploy user path
+        '/home/deploy/.local/share/claude/versions/2.1.207'  // Direct binary path
       ];
 
       for (const path of commonPaths) {
         try {
           const { existsSync } = await import('fs');
           if (existsSync(path)) {
-            this.emit('debug', `Found Claude CLI at: ${path}`);
-            return path;
+            // Try to resolve symlink
+            let resolvedPath = path;
+            try {
+              resolvedPath = realpathSync(path);
+              this.emit('debug', `Resolved ${path} to: ${resolvedPath}`);
+            } catch (err) {
+              // Use original path if can't resolve
+            }
+
+            this.emit('debug', `Found Claude CLI at: ${resolvedPath}`);
+            return resolvedPath;
           }
         } catch (err) {
           // Continue checking
@@ -155,7 +174,7 @@ export class DirectClaudeSpawner extends EventEmitter {
       cwd,
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: true, // Required for PM2 environment compatibility
+      shell: false, // Disable shell, use absolute path instead
       windowsHide: false // Show window for debugging (can be true in production)
     });
 
