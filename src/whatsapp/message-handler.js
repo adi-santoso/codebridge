@@ -39,6 +39,9 @@ export class MessageHandler extends EventEmitter {
     // Pending requests: requestId → { userId, resolve, reject, timestamp }
     this.pendingRequests = new Map();
 
+    // Cache last gatewaySessionId per user for late responses
+    this.lastGatewaySession = new Map();
+
     // Request timeout (120 seconds - Claude tools can take time)
     this.requestTimeout = 120000;
 
@@ -84,7 +87,26 @@ export class MessageHandler extends EventEmitter {
         // Remove from pending
         this.pendingRequests.delete(pending.requestId);
       } else {
-        this.logger.warn(`No pending request found for user ${userId}`);
+        // No pending request - likely timed out
+        // Try to get gatewaySessionId from lastGatewaySession cache
+        const gatewaySessionId = this.lastGatewaySession.get(userId);
+
+        if (gatewaySessionId) {
+          this.logger.info(`[${sessionId}] Sending late response (after timeout) to user ${userId}`);
+
+          // Emit event for main.js to handle delivery with late response flag
+          this.emit('async-response', {
+            userId,
+            sessionId,
+            gatewaySessionId,
+            response: `⏱️ *Late Response* (request timed out earlier)\n\n${response}`,
+            toolResults,
+            stopReason,
+            isLateResponse: true
+          });
+        } else {
+          this.logger.warn(`No pending request and no Gateway session cache found for user ${userId}`);
+        }
       }
     });
 
@@ -252,6 +274,9 @@ export class MessageHandler extends EventEmitter {
         reject: rejectPromise
       });
 
+      // Cache gatewaySessionId for this user (for late responses after timeout)
+      this.lastGatewaySession.set(userId, gatewaySessionId);
+
       // Send message to SessionManager (fire and forget)
       // Response will come via 'response-ready' event and be sent directly by event handler
       await this.sessionManager.sendMessage(userId, session.sessionId, message);
@@ -310,6 +335,14 @@ export class MessageHandler extends EventEmitter {
       if (now - data.timestamp > timeout) {
         this.logger.warn(`Cleaning up timed out request: ${requestId}`);
 
+        // Emit timeout event for main.js to send notification
+        this.emit('request-timeout', {
+          userId: data.userId,
+          sessionId: data.sessionId,
+          gatewaySessionId: data.gatewaySessionId,
+          requestId
+        });
+
         // Reject the promise if exists
         if (data.reject) {
           data.reject(new Error('Request timeout'));
@@ -342,8 +375,9 @@ export class MessageHandler extends EventEmitter {
       }
     }
 
-    // Clear all pending requests
+    // Clear all pending requests and cache
     this.pendingRequests.clear();
+    this.lastGatewaySession.clear();
 
     this.logger.info('MessageHandler shutdown complete');
   }

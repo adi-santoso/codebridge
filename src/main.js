@@ -227,6 +227,28 @@ class CodeBridge {
       });
     });
 
+    // Hook request timeout from MessageHandler
+    this.messageHandler.on('request-timeout', ({ userId, sessionId, gatewaySessionId, requestId }) => {
+      this.logger.warn('[CodeBridge] Request timeout - notifying user', {
+        sessionId,
+        gatewaySessionId,
+        userId,
+        requestId
+      });
+
+      // Send timeout notification to Gateway
+      this.gatewayClient.sendResponse({
+        sessionId: gatewaySessionId,
+        to: userId,
+        message: `⏱️ *Request Timeout*\n\n` +
+                 `Your request took longer than ${Math.floor(this.messageHandler.requestTimeout / 1000)} seconds.\n\n` +
+                 `Claude may still be processing in the background. ` +
+                 `If the response arrives, you'll receive it shortly.\n\n` +
+                 `For complex tasks, consider breaking them into smaller requests.`,
+        timestamp: Date.now()
+      });
+    });
+
     this.logger.info('[CodeBridge] Session hooks setup completed');
   }
 
