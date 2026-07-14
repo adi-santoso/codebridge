@@ -85,6 +85,44 @@ export class MessageHandler extends EventEmitter {
   }
 
   /**
+   * Split long message into chunks (WhatsApp limit: 4096 chars)
+   * @private
+   */
+  splitMessage(message, maxLength = 4000) {
+    if (message.length <= maxLength) {
+      return [message];
+    }
+
+    const chunks = [];
+    let remaining = message;
+
+    while (remaining.length > 0) {
+      if (remaining.length <= maxLength) {
+        chunks.push(remaining);
+        break;
+      }
+
+      // Find last newline before maxLength
+      let splitIndex = remaining.lastIndexOf('\n', maxLength);
+
+      // If no newline found, find last space
+      if (splitIndex === -1 || splitIndex < maxLength / 2) {
+        splitIndex = remaining.lastIndexOf(' ', maxLength);
+      }
+
+      // If still not found, force split at maxLength
+      if (splitIndex === -1 || splitIndex < maxLength / 2) {
+        splitIndex = maxLength;
+      }
+
+      chunks.push(remaining.substring(0, splitIndex));
+      remaining = remaining.substring(splitIndex).trim();
+    }
+
+    return chunks;
+  }
+
+  /**
    * Setup event listeners for SessionManager
    * @private
    */
@@ -109,14 +147,23 @@ export class MessageHandler extends EventEmitter {
           });
         }
 
+        // Split long response into chunks
+        const chunks = this.splitMessage(response);
+
         // Emit event for main.js to handle delivery
-        this.emit('async-response', {
-          userId,
-          sessionId,
-          gatewaySessionId: pending.gatewaySessionId,
-          response,
-          toolResults,
-          stopReason
+        // If multiple chunks, emit them sequentially
+        chunks.forEach((chunk, index) => {
+          this.emit('async-response', {
+            userId,
+            sessionId,
+            gatewaySessionId: pending.gatewaySessionId,
+            response: chunk,
+            toolResults: index === chunks.length - 1 ? toolResults : [], // Only attach toolResults to last chunk
+            stopReason,
+            isChunked: chunks.length > 1,
+            chunkIndex: index,
+            totalChunks: chunks.length
+          });
         });
 
         // Remove from pending
@@ -129,15 +176,24 @@ export class MessageHandler extends EventEmitter {
         if (gatewaySessionId) {
           this.logger.info(`[${sessionId}] Sending late response (after timeout) to user ${userId}`);
 
+          // Add late response header and split if needed
+          const lateResponse = `⏱️ *Late Response* (request timed out earlier)\n\n${response}`;
+          const chunks = this.splitMessage(lateResponse);
+
           // Emit event for main.js to handle delivery with late response flag
-          this.emit('async-response', {
-            userId,
-            sessionId,
-            gatewaySessionId,
-            response: `⏱️ *Late Response* (request timed out earlier)\n\n${response}`,
-            toolResults,
-            stopReason,
-            isLateResponse: true
+          chunks.forEach((chunk, index) => {
+            this.emit('async-response', {
+              userId,
+              sessionId,
+              gatewaySessionId,
+              response: chunk,
+              toolResults: index === chunks.length - 1 ? toolResults : [],
+              stopReason,
+              isLateResponse: true,
+              isChunked: chunks.length > 1,
+              chunkIndex: index,
+              totalChunks: chunks.length
+            });
           });
         } else {
           this.logger.warn(`No pending request and no Gateway session cache found for user ${userId}`);

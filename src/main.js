@@ -196,13 +196,31 @@ class CodeBridge {
     });
 
     // Hook async response ready from MessageHandler (queue result delivery)
-    this.messageHandler.on('async-response', ({ userId, sessionId, gatewaySessionId, response }) => {
-      this.logger.info('[CodeBridge] Async response ready - delivering to user', {
+    this.messageHandler.on('async-response', async ({
+      userId,
+      sessionId,
+      gatewaySessionId,
+      response,
+      isChunked,
+      chunkIndex,
+      totalChunks
+    }) => {
+      const chunkInfo = isChunked ? ` (chunk ${chunkIndex + 1}/${totalChunks})` : '';
+
+      this.logger.info(`[CodeBridge] Async response ready - delivering to user${chunkInfo}`, {
         sessionId,
         gatewaySessionId,
         userId,
-        responseLength: response.length
+        responseLength: response.length,
+        isChunked,
+        chunkIndex,
+        totalChunks
       });
+
+      // Add delay between chunks to preserve order
+      if (isChunked && chunkIndex > 0) {
+        await new Promise(resolve => setTimeout(resolve, 500)); // 500ms delay between chunks
+      }
 
       // Send async response to Gateway
       this.gatewayClient.sendResponse({
@@ -212,7 +230,7 @@ class CodeBridge {
         timestamp: Date.now()
       });
 
-      this.logger.success('[CodeBridge] Async response delivered', {
+      this.logger.success(`[CodeBridge] Async response delivered${chunkInfo}`, {
         gatewaySessionId,
         to: userId
       });
