@@ -391,10 +391,8 @@ export class MessageHandler extends EventEmitter {
           requestId
         });
 
-        // Reject the promise if exists
-        if (data.reject) {
-          data.reject(new Error('Request timeout'));
-        }
+        // Don't reject promise - timeout notification already sent via event
+        // Rejecting would cause unhandled rejection since no one is awaiting this promise
 
         this.pendingRequests.delete(requestId);
       }

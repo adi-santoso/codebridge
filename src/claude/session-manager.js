@@ -279,8 +279,13 @@ export class SessionManager extends EventEmitter {
 
         const result = await executor.execute(tool);
 
-        // Send tool result back to Claude
-        spawner.sendToolResult(userId, tool.id, result.content, result.isError);
+        // Send tool result back to Claude (check if session still exists)
+        try {
+          spawner.sendToolResult(userId, tool.id, result.content, result.isError);
+        } catch (sendError) {
+          this.logger.error(`[${sessionId}] Failed to send tool result: ${sendError.message}`);
+          return; // Session already closed, skip buffer update
+        }
 
         // Store tool result in buffer
         const buffer = this.responseBuffers.get(sessionId);
@@ -297,8 +302,12 @@ export class SessionManager extends EventEmitter {
 
         // Only send error back if not shutting down
         if (!this.isShuttingDown) {
-          // Send error back to Claude
-          spawner.sendToolResult(userId, tool.id, `Tool execution error: ${error.message}`, true);
+          // Send error back to Claude (wrap in try-catch)
+          try {
+            spawner.sendToolResult(userId, tool.id, `Tool execution error: ${error.message}`, true);
+          } catch (sendError) {
+            this.logger.error(`[${sessionId}] Failed to send error result: ${sendError.message}`);
+          }
         }
       }
     });
