@@ -17,6 +17,7 @@
     "test:server": "node tests/socket-server.test.js",
     "test:kreova": "node tests/quick-kreova-test.js",
     "test:session": "node tests/quick-session-test.js",
+    "test:commands": "node tests/test-command-system.js",
     "lint": "eslint src/"
   },
   "keywords": [

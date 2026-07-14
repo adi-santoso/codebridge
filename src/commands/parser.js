@@ -2,6 +2,7 @@
  * Command Parser
  *
  * Parses user commands like /newsession, /sessions, /project, etc.
+ * Enhanced with flag parsing and better validation
  */
 
 export class CommandParser {
@@ -11,13 +12,17 @@ export class CommandParser {
    * @returns {boolean}
    */
   static isCommand(message) {
+    if (!message || typeof message !== 'string') {
+      return false;
+    }
     return message.trim().startsWith('/');
   }
 
   /**
    * Parse command from message
+   * Enhanced to support flags and options
    * @param {string} message
-   * @returns {Object} { command, args }
+   * @returns {Object} { command, args, rawArgs, flags }
    */
   static parse(message) {
     const trimmed = message.trim();
@@ -29,12 +34,39 @@ export class CommandParser {
     // Split by whitespace
     const parts = trimmed.split(/\s+/);
     const command = parts[0].substring(1).toLowerCase(); // Remove '/' and lowercase
-    const args = parts.slice(1);
+    const rawParts = parts.slice(1);
+
+    // Parse flags and arguments
+    const flags = {};
+    const args = [];
+
+    for (let i = 0; i < rawParts.length; i++) {
+      const part = rawParts[i];
+
+      // Check for flags (--flag or --flag=value)
+      if (part.startsWith('--')) {
+        const flagPart = part.substring(2);
+        const [flagName, ...flagValueParts] = flagPart.split('=');
+        const flagValue = flagValueParts.join('=');
+
+        flags[flagName] = flagValue || true;
+      }
+      // Check for short flags (-f)
+      else if (part.startsWith('-') && part.length === 2) {
+        flags[part.substring(1)] = true;
+      }
+      // Regular argument
+      else {
+        args.push(part);
+      }
+    }
 
     return {
       command,
       args,
-      rawArgs: parts.slice(1).join(' ')
+      rawArgs: args.join(' '),
+      flags,
+      originalMessage: message
     };
   }
 
@@ -45,13 +77,22 @@ export class CommandParser {
    */
   static getDescription(command) {
     const descriptions = {
+      // Session commands
       newsession: 'Create a new session',
       sessions: 'List all your sessions',
       session: 'Switch to a specific session (usage: /session <sessionId>)',
+      closesession: 'Close current session',
+      clear: 'Clear conversation history',
+
+      // Project commands
       projects: 'List available projects',
       project: 'Select project for current session (usage: /project <projectName>)',
-      status: 'Show current session status',
-      help: 'Show available commands'
+
+      // Basic commands
+      help: 'Show available commands',
+      ping: 'Check if CodeBridge is alive',
+      version: 'Show CodeBridge version',
+      status: 'Show current session status'
     };
 
     return descriptions[command] || 'Unknown command';
@@ -63,13 +104,22 @@ export class CommandParser {
    */
   static getAvailableCommands() {
     return [
+      // Session management
       { command: 'newsession', description: 'Create a new session' },
       { command: 'sessions', description: 'List all your sessions' },
       { command: 'session <id>', description: 'Switch to a specific session' },
+      { command: 'closesession', description: 'Close current session' },
+      { command: 'clear', description: 'Clear conversation history' },
+
+      // Project management
       { command: 'projects', description: 'List available projects' },
       { command: 'project <name>', description: 'Select project for current session' },
-      { command: 'status', description: 'Show current session status' },
-      { command: 'help', description: 'Show this help message' }
+
+      // Basic commands
+      { command: 'help [command]', description: 'Show this help message or help for specific command' },
+      { command: 'ping', description: 'Health check' },
+      { command: 'version', description: 'Show version info' },
+      { command: 'status', description: 'Show current session status' }
     ];
   }
 
@@ -104,6 +154,10 @@ export class CommandParser {
       case 'projects':
       case 'status':
       case 'help':
+      case 'ping':
+      case 'version':
+      case 'clear':
+      case 'closesession':
         return { valid: true };
 
       default:
@@ -112,6 +166,23 @@ export class CommandParser {
           error: `Unknown command: ${command}. Type /help for available commands.`
         };
     }
+  }
+
+  /**
+   * Sanitize command input
+   * @param {string} input
+   * @returns {string}
+   */
+  static sanitize(input) {
+    if (!input || typeof input !== 'string') {
+      return '';
+    }
+
+    // Remove potentially dangerous characters
+    return input
+      .trim()
+      .replace(/[\x00-\x1F\x7F-\x9F]/g, '') // Remove control characters
+      .substring(0, 1000); // Limit length
   }
 }
 

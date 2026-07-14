@@ -63,6 +63,32 @@ export class SessionDatabase {
       CREATE INDEX IF NOT EXISTS idx_userId ON sessions(userId);
       CREATE INDEX IF NOT EXISTS idx_sessionId ON sessions(sessionId);
       CREATE INDEX IF NOT EXISTS idx_state ON sessions(state);
+
+      -- Command execution history
+      CREATE TABLE IF NOT EXISTS command_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        userId TEXT NOT NULL,
+        sessionId TEXT,
+        command TEXT NOT NULL,
+        args TEXT,
+        result TEXT,
+        success INTEGER DEFAULT 1,
+        executedAt INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_command_userId ON command_history(userId);
+      CREATE INDEX IF NOT EXISTS idx_command_sessionId ON command_history(sessionId);
+      CREATE INDEX IF NOT EXISTS idx_command_executedAt ON command_history(executedAt);
+
+      -- User preferences
+      CREATE TABLE IF NOT EXISTS user_preferences (
+        userId TEXT PRIMARY KEY,
+        responseMode TEXT DEFAULT 'balanced',
+        debugMode INTEGER DEFAULT 0,
+        workingDirectory TEXT,
+        createdAt INTEGER NOT NULL,
+        updatedAt INTEGER NOT NULL
+      );
     `);
   }
 
@@ -288,6 +314,154 @@ export class SessionDatabase {
     } while (this.sessionExists(id));
 
     return id;
+  }
+
+  /**
+   * Insert command history entry
+   * @param {Object} data
+   * @param {string} data.userId
+   * @param {string} [data.sessionId]
+   * @param {string} data.command
+   * @param {string} [data.args]
+   * @param {string} [data.result]
+   * @param {boolean} data.success
+   * @param {number} data.executedAt
+   */
+  insertCommandHistory(data) {
+    const stmt = this.db.prepare(`
+      INSERT INTO command_history (userId, sessionId, command, args, result, success, executedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    stmt.run(
+      data.userId,
+      data.sessionId || null,
+      data.command,
+      data.args || null,
+      data.result || null,
+      data.success ? 1 : 0,
+      data.executedAt
+    );
+  }
+
+  /**
+   * Get command history for a user with pagination support
+   * @param {string} userId
+   * @param {number} [limit=50] - Maximum number of results to return
+   * @param {number} [offset=0] - Number of results to skip
+   * @returns {Array<Object>}
+   */
+  getCommandHistory(userId, limit = 50, offset = 0) {
+    const stmt = this.db.prepare(`
+      SELECT * FROM command_history
+      WHERE userId = ?
+      ORDER BY executedAt DESC
+      LIMIT ? OFFSET ?
+    `);
+
+    return stmt.all(userId, limit, offset);
+  }
+
+  /**
+   * Get command history count for a user
+   * @param {string} userId
+   * @returns {number}
+   */
+  getCommandHistoryCount(userId) {
+    const stmt = this.db.prepare(`
+      SELECT COUNT(*) as count
+      FROM command_history
+      WHERE userId = ?
+    `);
+
+    const result = stmt.get(userId);
+    return result.count;
+  }
+
+  /**
+   * Clean up old command history (older than N days)
+   * @param {number} days
+   * @returns {number} Number of deleted entries
+   */
+  cleanupOldCommandHistory(days = 30) {
+    const cutoff = Date.now() - (days * 24 * 60 * 60 * 1000);
+
+    const stmt = this.db.prepare(`
+      DELETE FROM command_history
+      WHERE executedAt < ?
+    `);
+
+    const result = stmt.run(cutoff);
+    return result.changes;
+  }
+
+  /**
+   * Get user preferences
+   * @param {string} userId
+   * @returns {Object|null}
+   */
+  getUserPreferences(userId) {
+    const stmt = this.db.prepare('SELECT * FROM user_preferences WHERE userId = ?');
+    return stmt.get(userId);
+  }
+
+  /**
+   * Set user preferences
+   * @param {string} userId
+   * @param {Object} preferences
+   */
+  setUserPreferences(userId, preferences) {
+    const existing = this.getUserPreferences(userId);
+    const now = Date.now();
+
+    if (existing) {
+      // Update existing
+      const updates = [];
+      const values = [];
+
+      if (preferences.responseMode !== undefined) {
+        updates.push('responseMode = ?');
+        values.push(preferences.responseMode);
+      }
+
+      if (preferences.debugMode !== undefined) {
+        updates.push('debugMode = ?');
+        values.push(preferences.debugMode ? 1 : 0);
+      }
+
+      if (preferences.workingDirectory !== undefined) {
+        updates.push('workingDirectory = ?');
+        values.push(preferences.workingDirectory);
+      }
+
+      updates.push('updatedAt = ?');
+      values.push(now);
+
+      values.push(userId);
+
+      const stmt = this.db.prepare(`
+        UPDATE user_preferences
+        SET ${updates.join(', ')}
+        WHERE userId = ?
+      `);
+
+      stmt.run(...values);
+    } else {
+      // Insert new
+      const stmt = this.db.prepare(`
+        INSERT INTO user_preferences (userId, responseMode, debugMode, workingDirectory, createdAt, updatedAt)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `);
+
+      stmt.run(
+        userId,
+        preferences.responseMode || 'balanced',
+        preferences.debugMode ? 1 : 0,
+        preferences.workingDirectory || null,
+        now,
+        now
+      );
+    }
   }
 
   /**

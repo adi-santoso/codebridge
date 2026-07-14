@@ -16,6 +16,7 @@ import { EventEmitter } from 'events';
 import { Logger } from '../utils/logger.js';
 import { CommandParser } from '../commands/parser.js';
 import { SessionCommands } from '../commands/session-commands.js';
+import { CommandHandler } from '../commands/handler.js';
 
 export class MessageHandler extends EventEmitter {
   /**
@@ -30,10 +31,21 @@ export class MessageHandler extends EventEmitter {
     this.sessionManager = options.sessionManager;
     this.logger = new Logger('MessageHandler');
 
-    // Session commands handler
+    // Get database instance from SessionManager
+    this.db = this.sessionManager.db;
+
+    // Session commands handler (deprecated - kept for backward compatibility)
     this.sessionCommands = new SessionCommands({
       sessionManager: this.sessionManager,
       projectRootPath: options.projectRootPath
+    });
+
+    // NEW: Command handler with middleware chain
+    this.commandHandler = new CommandHandler({
+      sessionManager: this.sessionManager,
+      db: this.db,
+      projectRootPath: options.projectRootPath,
+      allowedNumbers: this.parseAllowedNumbers(process.env.ALLOWED_WHATSAPP_NUMBERS)
     });
 
     // Pending requests: requestId → { userId, resolve, reject, timestamp }
@@ -279,17 +291,29 @@ export class MessageHandler extends EventEmitter {
    * @private
    */
   async handleCommand(userId, message, requestId) {
-    this.logger.info(`[${requestId}] Processing command`);
+    this.logger.info(`[${requestId}] Processing command via new command handler`);
 
     try {
-      // Execute command
-      const response = await this.sessionCommands.execute(userId, message);
+      // Execute command via new command handler (with middleware)
+      const response = await this.commandHandler.execute(userId, message);
+
+      // Handle silent drop (unauthorized)
+      if (response.message === null) {
+        return {
+          requestId,
+          response: null,
+          isCommand: true,
+          isError: false,
+          silentDrop: true
+        };
+      }
 
       return {
         requestId,
-        response,
+        response: response.message,
         isCommand: true,
-        isError: false
+        isError: !response.success,
+        data: response.data
       };
 
     } catch (error) {
