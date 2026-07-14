@@ -32,20 +32,35 @@ export class DirectClaudeSpawner extends EventEmitter {
    * @returns {Promise<string>} - Path to Claude CLI
    */
   async findClaudeCli() {
+    this.emit('debug', '[findClaudeCli] Starting Claude CLI search...');
+
     try {
       // Try to find 'claude' in PATH
       let claudePath = await which('claude');
+      this.emit('debug', `[findClaudeCli] Found via which: ${claudePath}`);
 
       // Resolve symlink to actual binary
       try {
+        const originalPath = claudePath;
         claudePath = realpathSync(claudePath);
-        this.emit('debug', `Resolved Claude CLI symlink to: ${claudePath}`);
+        this.emit('debug', `[findClaudeCli] Resolved symlink ${originalPath} -> ${claudePath}`);
       } catch (err) {
-        this.emit('debug', `Could not resolve symlink, using: ${claudePath}`);
+        this.emit('debug', `[findClaudeCli] Could not resolve symlink: ${err.message}`);
+      }
+
+      // Verify file exists and is executable
+      try {
+        const { accessSync, constants } = await import('fs');
+        accessSync(claudePath, constants.X_OK);
+        this.emit('debug', `[findClaudeCli] Verified executable: ${claudePath}`);
+      } catch (err) {
+        this.emit('debug', `[findClaudeCli] WARNING - Not executable: ${err.message}`);
       }
 
       return claudePath;
     } catch (error) {
+      this.emit('debug', `[findClaudeCli] which() failed: ${error.message}, trying fallback paths...`);
+
       // Check common installation paths
       const commonPaths = [
         'C:\\Program Files\\Claude\\claude.exe',
@@ -57,23 +72,33 @@ export class DirectClaudeSpawner extends EventEmitter {
       ];
 
       for (const path of commonPaths) {
+        this.emit('debug', `[findClaudeCli] Checking: ${path}`);
+
         try {
-          const { existsSync } = await import('fs');
+          const { existsSync, accessSync, constants } = await import('fs');
           if (existsSync(path)) {
+            this.emit('debug', `[findClaudeCli] Path exists: ${path}`);
+
             // Try to resolve symlink
             let resolvedPath = path;
             try {
               resolvedPath = realpathSync(path);
-              this.emit('debug', `Resolved ${path} to: ${resolvedPath}`);
+              this.emit('debug', `[findClaudeCli] Resolved ${path} -> ${resolvedPath}`);
             } catch (err) {
-              // Use original path if can't resolve
+              this.emit('debug', `[findClaudeCli] Not a symlink or can't resolve: ${path}`);
             }
 
-            this.emit('debug', `Found Claude CLI at: ${resolvedPath}`);
-            return resolvedPath;
+            // Verify executable
+            try {
+              accessSync(resolvedPath, constants.X_OK);
+              this.emit('debug', `[findClaudeCli] SUCCESS - Found executable at: ${resolvedPath}`);
+              return resolvedPath;
+            } catch (err) {
+              this.emit('debug', `[findClaudeCli] Not executable: ${resolvedPath} - ${err.message}`);
+            }
           }
         } catch (err) {
-          // Continue checking
+          this.emit('debug', `[findClaudeCli] Error checking ${path}: ${err.message}`);
         }
       }
 
