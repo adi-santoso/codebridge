@@ -45,8 +45,43 @@ export class MessageHandler extends EventEmitter {
     // Request timeout (120 seconds - Claude tools can take time)
     this.requestTimeout = 120000;
 
+    // WhatsApp number whitelist
+    this.allowedNumbers = this.parseAllowedNumbers(process.env.ALLOWED_WHATSAPP_NUMBERS);
+
     // Setup event listeners
     this.setupEventListeners();
+  }
+
+  /**
+   * Parse allowed WhatsApp numbers from env
+   * @private
+   */
+  parseAllowedNumbers(envValue) {
+    if (!envValue || envValue.trim() === '') {
+      this.logger.warn('No ALLOWED_WHATSAPP_NUMBERS configured - all numbers accepted (INSECURE)');
+      return null; // null = allow all
+    }
+
+    const numbers = envValue
+      .split(',')
+      .map(n => n.trim())
+      .filter(Boolean);
+
+    this.logger.info(`WhatsApp whitelist enabled: ${numbers.length} number(s)`);
+    return new Set(numbers);
+  }
+
+  /**
+   * Check if WhatsApp number is allowed
+   * @private
+   */
+  isNumberAllowed(userId) {
+    // If no whitelist configured, allow all
+    if (!this.allowedNumbers) {
+      return true;
+    }
+
+    return this.allowedNumbers.has(userId);
   }
 
   /**
@@ -149,6 +184,18 @@ export class MessageHandler extends EventEmitter {
     const { userId, message, requestId = this.generateRequestId(), gatewaySessionId } = data;
 
     this.logger.info(`[${requestId}] Message from ${userId}: ${message.substring(0, 50)}...`);
+
+    // Check whitelist
+    if (!this.isNumberAllowed(userId)) {
+      this.logger.warn(`[${requestId}] Unauthorized access attempt from ${userId}`);
+
+      return {
+        requestId,
+        response: `🚫 *Access Denied*\n\nYour WhatsApp number (${userId}) is not authorized to use this CodeBridge instance.\n\nThis is a private coding assistant. If you believe this is an error, contact the system administrator.`,
+        isError: true,
+        isUnauthorized: true
+      };
+    }
 
     try {
       // Check if message is a command
