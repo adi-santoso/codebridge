@@ -319,7 +319,11 @@ class CodeBridge {
     this.logger.info('[CodeBridge] Shutting down gracefully...');
 
     try {
-      // 1. Stop accepting new messages
+      // 1. Stop accepting new messages & reject pending requests
+      if (this.messageHandler) {
+        await this.messageHandler.shutdown();
+      }
+
       // 2. Cleanup session rooms
       if (this.sessionRoomManager) {
         await this.sessionRoomManager.cleanup();

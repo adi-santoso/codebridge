@@ -59,6 +59,18 @@ export class MessageHandler extends EventEmitter {
       const pending = this.findPendingRequest(userId);
 
       if (pending) {
+        // Resolve the promise if exists
+        if (pending.resolve) {
+          pending.resolve({
+            userId,
+            sessionId,
+            gatewaySessionId: pending.gatewaySessionId,
+            response,
+            toolResults,
+            stopReason
+          });
+        }
+
         // Emit event for main.js to handle delivery
         this.emit('async-response', {
           userId,
@@ -84,6 +96,11 @@ export class MessageHandler extends EventEmitter {
       const pending = this.findPendingRequest(userId);
 
       if (pending) {
+        // Reject the promise if exists
+        if (pending.reject) {
+          pending.reject(error);
+        }
+
         // Emit error event for main.js to handle delivery
         this.emit('async-error', {
           userId,
@@ -218,12 +235,21 @@ export class MessageHandler extends EventEmitter {
     }
 
     try {
-      // Store request metadata (for tracking + gateway routing)
+      // Create promise for timeout handling
+      let resolvePromise, rejectPromise;
+      const timeoutPromise = new Promise((resolve, reject) => {
+        resolvePromise = resolve;
+        rejectPromise = reject;
+      });
+
+      // Store request metadata with promise resolvers
       this.pendingRequests.set(requestId, {
         userId,
         sessionId: session.sessionId,
         gatewaySessionId, // Store for async response routing
-        timestamp: Date.now()
+        timestamp: Date.now(),
+        resolve: resolvePromise,
+        reject: rejectPromise
       });
 
       // Send message to SessionManager (fire and forget)
@@ -283,7 +309,12 @@ export class MessageHandler extends EventEmitter {
     for (const [requestId, data] of this.pendingRequests.entries()) {
       if (now - data.timestamp > timeout) {
         this.logger.warn(`Cleaning up timed out request: ${requestId}`);
-        data.reject(new Error('Request timeout'));
+
+        // Reject the promise if exists
+        if (data.reject) {
+          data.reject(new Error('Request timeout'));
+        }
+
         this.pendingRequests.delete(requestId);
       }
     }
@@ -294,6 +325,27 @@ export class MessageHandler extends EventEmitter {
    */
   getPendingRequestCount() {
     return this.pendingRequests.size;
+  }
+
+  /**
+   * Shutdown gracefully - reject all pending requests
+   */
+  async shutdown() {
+    this.logger.info('MessageHandler shutting down...');
+
+    // Reject all pending requests
+    for (const [requestId, data] of this.pendingRequests.entries()) {
+      this.logger.warn(`Rejecting pending request due to shutdown: ${requestId}`);
+
+      if (data.reject) {
+        data.reject(new Error('System shutting down'));
+      }
+    }
+
+    // Clear all pending requests
+    this.pendingRequests.clear();
+
+    this.logger.info('MessageHandler shutdown complete');
   }
 }
 

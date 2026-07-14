@@ -43,6 +43,9 @@ export class SessionManager extends EventEmitter {
     // Response aggregation: sessionId → { text: '', toolResults: [] }
     this.responseBuffers = new Map();
 
+    // Shutdown flag
+    this.isShuttingDown = false;
+
     this.logger.success('SessionManager constructor initialized');
   }
 
@@ -259,8 +262,21 @@ export class SessionManager extends EventEmitter {
     spawner.on('tool-use', async ({ userId, tool }) => {
       this.logger.info(`[${sessionId}] Tool use: ${tool.name}`);
 
+      // Check if shutting down
+      if (this.isShuttingDown) {
+        this.logger.warn(`[${sessionId}] Ignoring tool use during shutdown: ${tool.name}`);
+        return;
+      }
+
       try {
         const executor = this.executors.get(sessionId);
+
+        // Double check executor exists (session might be destroyed)
+        if (!executor) {
+          this.logger.error(`[${sessionId}] No executor found for session`);
+          return;
+        }
+
         const result = await executor.execute(tool);
 
         // Send tool result back to Claude
@@ -279,8 +295,11 @@ export class SessionManager extends EventEmitter {
       } catch (error) {
         this.logger.error(`[${sessionId}] Tool execution error:`, error.message);
 
-        // Send error back to Claude
-        spawner.sendToolResult(userId, tool.id, `Tool execution error: ${error.message}`, true);
+        // Only send error back if not shutting down
+        if (!this.isShuttingDown) {
+          // Send error back to Claude
+          spawner.sendToolResult(userId, tool.id, `Tool execution error: ${error.message}`, true);
+        }
       }
     });
 
@@ -550,6 +569,9 @@ ${message}`;
    */
   async shutdown() {
     this.logger.info('Shutting down SessionManager...');
+
+    // Set shutdown flag to prevent new tool executions
+    this.isShuttingDown = true;
 
     // Close all spawners
     for (const [sessionId, spawner] of this.spawners.entries()) {
