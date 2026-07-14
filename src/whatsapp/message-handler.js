@@ -185,15 +185,16 @@ export class MessageHandler extends EventEmitter {
 
     this.logger.info(`[${requestId}] Message from ${userId}: ${message.substring(0, 50)}...`);
 
-    // Check whitelist
+    // Check whitelist - silently ignore unauthorized numbers
     if (!this.isNumberAllowed(userId)) {
-      this.logger.warn(`[${requestId}] Unauthorized access attempt from ${userId}`);
+      this.logger.warn(`[${requestId}] Unauthorized access attempt from ${userId} - silently ignored`);
 
       return {
         requestId,
-        response: `🚫 *Access Denied*\n\nYour WhatsApp number (${userId}) is not authorized to use this CodeBridge instance.\n\nThis is a private coding assistant. If you believe this is an error, contact the system administrator.`,
-        isError: true,
-        isUnauthorized: true
+        response: null, // No response sent
+        isError: false,
+        isUnauthorized: true,
+        silentDrop: true
       };
     }
 

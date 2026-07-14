@@ -123,6 +123,15 @@ class CodeBridge {
           gatewaySessionId: data.sessionId // Gateway session ID for reply
         });
 
+        // Skip response if silentDrop (unauthorized number)
+        if (result.silentDrop) {
+          this.logger.info('[CodeBridge] Message silently dropped (unauthorized)', {
+            from: data.from,
+            sessionId: data.sessionId
+          });
+          return;
+        }
+
         // Send immediate response (acknowledgment or command result)
         if (result.response) {
           this.gatewayClient.sendResponse({
