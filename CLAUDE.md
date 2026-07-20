@@ -1,194 +1,133 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code (and other agents) working in this repository.
 
 ## Project Overview
 
-CodeBridge is a WhatsApp-to-Claude Code bridge that enables coding via WhatsApp chat. It's an MCP (Model Context Protocol) server that manages multi-user sessions, allowing developers to code from anywhere by sending messages through WhatsApp.
+**CodeBridge** bridges WhatsApp chat to Claude Code CLI so a developer can code via WhatsApp.
 
-**Current Status**: Design phase complete, implementation not yet started.
+- Entry: `src/main.js`
+- Runtime: Node.js ≥18, ESM (`"type": "module"`)
+- Role: **Socket.IO client** to an external WhatsApp Gateway (not a Baileys host)
+- Engine: spawn **Claude CLI** per session (`stream-json`), parse with `ClaudeStreamHandler`
+- Persistence: SQLite (`better-sqlite3`) at `.codebridge/sessions.db`
 
-## Architecture
+**Status (2026-03):** Implemented and usable. Core path + 45-command system (Phases 1–9) complete. Not a design-only repo.
 
-The system uses a three-tier architecture:
+## Architecture (current)
 
-1. **Baileys Gateway (External)**: Handles WhatsApp session management via Baileys library
-2. **CodeBridge MCP Server**: Core bridge layer with session management, command parsing, and MCP protocol implementation
-3. **Claude Code Instances**: Per-user isolated instances with project-specific context
+```
+WhatsApp user
+    → External Gateway (Baileys + Socket.IO server)
+    → GatewayClient (src/gateway-client.js)
+    → MessageHandler (src/whatsapp/message-handler.js)
+         ├─ /command → CommandHandler + registry + middleware
+         └─ prompt   → SessionManager → DirectClaudeSpawner
+                          → Claude CLI subprocess (stream-json)
+                          → ClaudeStreamHandler events
+                          → ToolExecutor (Bash/Read/Write/Edit)
+    → codebridge:response → Gateway → WhatsApp
+```
 
-**Key Design Principle**: One Claude instance per active user, with automatic cleanup of idle sessions.
+**Do not implement** the old MCP-server-as-core design. That was abandoned. MCP packages in `package.json` / `src/claude/archive/` are historical.
 
-## Development Commands
+### Session state machine
 
-### Running the Application
+`NO_SESSION` → `SESSION_SELECTED` → `PROJECT_SELECTED`
+
+Coding prompts require `PROJECT_SELECTED` (session + project chosen).
+
+### Key modules
+
+| Path | Role |
+|------|------|
+| `src/main.js` | Boot, gateway hooks, periodic cleanup, shutdown |
+| `src/gateway-client.js` | Socket.IO client, rooms, send response |
+| `src/session-room-manager.js` | Join/leave gateway rooms per session |
+| `src/whatsapp/message-handler.js` | Whitelist, command vs prompt, chunking, timeouts |
+| `src/claude/session-manager.js` | Multi-session, spawners, response buffer |
+| `src/claude/direct-spawner.js` | Spawn Claude CLI, settings.json, response modes |
+| `src/claude/stream-handler.js` | NDJSON stream-json parser |
+| `src/tools/executor.js` | Tool execution (path sandbox for Read/Write/Edit) |
+| `src/commands/*` | Parser, registry, middleware, handlers, templates |
+| `src/database/session-db.js` | SQLite schema + queries |
+| `src/utils/*` | logger, config, project-registry, ignore-matcher, file-ops |
+
+Archive (do not extend unless reviving deliberately):
+
+- `src/archive/` — old Socket.IO **server** mode
+- `src/claude/archive/` — ACP / JSON-RPC experiments
+
+## Commands
 
 ```bash
-# Development mode with auto-reload
-npm run dev
-
-# Production mode
-npm start
-
-# Production with PM2
-npm run start:prod
-pm2 stop codebridge
-pm2 restart codebridge
+npm start          # node src/main.js
+npm run dev        # watch mode
+npm test           # jest (experimental-vm-modules)
+npm run lint       # eslint src/
+npm run test:commands
+pm2 start ecosystem.config.cjs
 pm2 logs codebridge
 ```
 
-### Testing & Quality
-
-```bash
-# Run tests
-npm test
-
-# Lint code
-npm run lint
-
-# Initial setup script
-npm run setup
-```
-
-## Project Structure
-
-This project follows a modular structure with clear separation of concerns:
-
-- `src/mcp-server/`: MCP protocol implementation (server.js, tools.js, resources.js)
-- `src/whatsapp/`: WhatsApp integration via Baileys (client.js, webhook.js)
-- `src/claude/`: Claude Code process management (instance.js, session.js)
-- `src/commands/`: Command parser and handlers (index.js, project.js, system.js)
-- `src/utils/`: Shared utilities (message-queue.js, logger.js, config.js)
-- `config/`: Configuration files (projects.json, settings.json, .env)
-- `data/`: Runtime data - sessions state and logs (gitignored)
+Manual integration scripts live under `tests/` (many are runnable with `node tests/...`, not only Jest).
 
 ## Configuration
 
-### projects.json
+Copy `.env.example` → `.env`. Critical vars:
 
-Defines available projects with paths and settings. Each project entry needs:
-- `path`: Absolute path to project directory
-- `description`: Human-readable description
-- `default`: Boolean indicating default project
-- `settings.autoCommit`: Auto-commit changes
-- `settings.autoTest`: Auto-run tests
+| Var | Purpose |
+|-----|---------|
+| `GATEWAY_URL` | External gateway Socket.IO URL |
+| `GATEWAY_AUTH_KEY` | Client auth key |
+| `GATEWAY_SESSIONS` | Optional comma-separated gateway room IDs to join on boot |
+| `PROJECT_ROOT_PATH` | Root used by ProjectRegistry |
+| `SESSION_DB_PATH` | SQLite path (default `./.codebridge/sessions.db`) |
+| `ALLOWED_WHATSAPP_NUMBERS` | Comma-separated whitelist (empty = allow all — insecure) |
+| `MAX_CONCURRENT_SESSIONS` | Cap concurrent Claude sessions |
+| `ANTHROPIC_*` / Claude model | Often also via `~/.claude/settings.json` for CLI |
 
-### settings.json
+Claude CLI must be on `PATH`. Spawner loads `~/.claude/settings.json` for auth/endpoint/model (kreova-compatible endpoints supported).
 
-Bridge-level configuration:
-- `bridge.instanceMode`: Always "per-user" for isolation
-- `whatsapp.pollingInterval`: Message polling frequency (2000ms)
-- `whatsapp.useWebhook`: false for polling, true for webhook mode
-- `claude.responseTimeout`: Max wait time for Claude response (120000ms)
-- `security.requireWhitelist`: Enforce phone number whitelist
+## Command system
 
-### Environment Variables
+- Slash messages → `CommandParser` → `CommandHandler` (middleware: auth, role, rate limit, logging)
+- Registry: `src/commands/registry.js` (~45 commands)
+- Handlers: `src/commands/handlers/{basic,session,tool,file,debug,response,context,template,admin}.js`
+- Templates: `src/commands/templates/`
+- Full user list: `docs/COMMANDS.md`
 
-Critical environment variables in .env:
-- `BAILEYS_URL`: Baileys gateway endpoint
-- `ALLOWED_NUMBERS`: Comma-separated whitelist of phone numbers
-- `CLAUDE_API_KEY`: Anthropic API key
-- `SESSION_IDLE_TIMEOUT`: Idle timeout before cleanup (1800000ms = 30min)
-- `MAX_CONCURRENT_SESSIONS`: Max concurrent users (10)
-- `LOG_LEVEL`: Logging verbosity (info, debug, warn, error)
+Non-slash text = coding prompt to active Claude session.
 
-## Session Management
+## Security (known constraints)
 
-The session manager maintains a mapping of `userId → { claudeInstance, projectPath, conversationHistory }`:
+- Whitelist via env and/or DB (`WHITELIST_MODE`)
+- Unauthorized numbers: silent drop (no reply)
+- Read/Write/Edit: path must stay under project root
+- **Bash is only cwd-sandboxed** — not a full jail; treat as trusted-user tool
+- Prefer deny-by-default whitelist in production
 
-- Sessions spawn on first message from a user
-- Idle sessions auto-cleanup after `SESSION_IDLE_TIMEOUT`
-- Session state persists to `data/sessions/{userId}.json`
-- On new message after cleanup, session restores from disk
-- Concurrent session limit enforced via `MAX_CONCURRENT_SESSIONS`
+## Docs map
 
-## Command System
+| Doc | Use |
+|-----|-----|
+| `README.md` | Human quick start + status |
+| `docs/ARCHITECTURE.md` | Current architecture |
+| `docs/SETUP.md` | Install / env / PM2 |
+| `docs/COMMANDS.md` | Command reference |
+| `docs/ROADMAP.md` | Done vs next |
+| `docs/history/` | Stale design notes & phase writeups (historical only) |
+| `docs/COMMAND_SYSTEM_PHASE*.md` | Phase design detail (command system) |
 
-Commands start with `/` and are handled separately from coding prompts:
+When docs disagree with code, **trust the code**.
 
-**Project Management**: `/projects`, `/switch <name>`, `/current`
-**Session Management**: `/status`, `/reset`, `/history`
-**System**: `/help`
+## Implementation notes for agents
 
-Non-slash messages are treated as coding prompts and forwarded directly to the Claude instance.
-
-## Implementation Roadmap
-
-The project follows a phased implementation approach defined in docs/ROADMAP.md:
-
-**Phase 1 (MVP)**: Core infrastructure - utils, WhatsApp client, command parser, Claude instance manager, MCP server (2-3 weeks)
-
-**Phase 2 (Enhancement)**: Security hardening, session persistence, auto-cleanup, error handling (2-3 weeks)
-
-**Phase 3 (Advanced)**: Web dashboard, code formatting, file operations, git integration (3-4 weeks)
-
-**Phase 4 (Scale)**: Multi-server deployment, database integration, monitoring, auto-scaling (2-3 weeks)
-
-When implementing, follow the order defined in ROADMAP.md Phase 1:
-1. Utils & Infrastructure (config, logger, message-queue)
-2. WhatsApp Client
-3. Command Parser
-4. Claude Instance Manager & Session Manager
-5. MCP Server Core
-6. Integration & Testing
-
-## Security Considerations
-
-- **Whitelist Enforcement**: All incoming messages must be from `ALLOWED_NUMBERS`
-- **Rate Limiting**: Per-user rate limiting (10 messages/minute configurable)
-- **Input Sanitization**: Escape special characters before forwarding to Claude
-- **File Access Control**: Claude instances restricted to assigned project directories only
-- **Audit Logging**: Log all security events, rejected attempts, and user actions
-
-## Key Technical Decisions
-
-### Why MCP Protocol?
-
-Using MCP instead of direct Claude API provides:
-- File operation capabilities through Claude Code
-- Automatic conversation context management
-- Access to Claude Code's tool ecosystem
-- Better coding assistant experience
-
-### Why Per-User Instances?
-
-One Claude instance per user (not shared) ensures:
-- Context isolation between users
-- No security risks from context mixing
-- Independent project contexts
-- Scalable resource management via cleanup
-
-### Baileys vs Direct WhatsApp API
-
-Using Baileys library via external gateway provides:
-- No official API dependency
-- Lower cost than WhatsApp Business API
-- More control over session management
-- Separation of concerns (WhatsApp logic external)
-
-## Error Handling Strategy
-
-The system uses retry strategies with exponential backoff:
-
-- **Baileys Gateway Down**: Queue messages, retry every 30s
-- **Claude Timeout**: Kill and restart instance
-- **Out of Memory**: Cleanup all idle sessions
-- **Rate Limit Hit**: Queue message, notify user
-- **Session Limit Reached**: Cleanup oldest idle session
-
-All errors should return user-friendly messages with actionable suggestions.
-
-## Testing Approach
-
-For Phase 1 MVP, focus on:
-- Unit tests for utils (config, logger, message queue)
-- Integration tests for WhatsApp client
-- Manual end-to-end testing scenarios documented in ROADMAP.md section 1.7
-- Mock Claude instance for development until Claude Code CLI interface is confirmed
-
-## Notes for Implementation
-
-- The Claude Code CLI interface specification is not yet confirmed. Plan to create a mock implementation for development and have a fallback to direct Claude API.
-- Session persistence uses file-based storage in Phase 1, can migrate to Redis in Phase 4 for multi-server deployment.
-- WhatsApp message format is limited - responses may need chunking for long code outputs.
-- Conversation history should be trimmed after a certain length to avoid context window issues.
-- PM2 configuration is in `scripts/pm2.config.js` for production deployment.
+1. Read existing module before editing; match ESM + existing Logger patterns.
+2. Prefer shortest diff; no new deps if stdlib/existing dep works.
+3. Session DB methods live in `session-db.js` — check schema before adding tables.
+4. Gateway protocol:
+   - In: `whatsapp:message` `{ from, message, sessionId, timestamp }`
+   - Out: `codebridge:response` `{ sessionId, to, message, timestamp }`
+5. Long WhatsApp replies are chunked (~4000 chars) in MessageHandler / main hooks.
+6. Do not reintroduce Socket.IO **server** mode in `main.js` unless explicitly requested.

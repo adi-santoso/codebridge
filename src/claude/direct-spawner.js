@@ -23,6 +23,15 @@ export class DirectClaudeSpawner extends EventEmitter {
     this.projectPath = options.projectPath;
     this.model = options.model || DEFAULT_MODEL;
 
+    // Response mode (Phase 4)
+    this.responseMode = options.responseMode || 'balanced';
+    this.systemPromptModifiers = {
+      brief: 'Be extremely concise. Give direct answers with minimal explanation. Use bullet points. Max 3 sentences per response unless code is involved.',
+      detailed: 'Be comprehensive and thorough. Explain your reasoning in detail. Provide context, examples, and consider edge cases. Break down complex topics step-by-step.',
+      'code-only': 'Only output code. Do not include explanations, commentary, or markdown text outside code blocks. If multiple files, separate with file path comments.',
+      'explain-only': 'Explain concepts and solutions without writing code. Use pseudocode or descriptions instead of actual code. Focus on the "why" and "how" rather than implementation.'
+    };
+
     // Session storage: userId -> session object
     this.sessions = new Map();
   }
@@ -339,6 +348,37 @@ export class DirectClaudeSpawner extends EventEmitter {
   }
 
   /**
+   * Set response mode for this spawner (Phase 4)
+   * @param {string} mode - Response mode ('brief', 'balanced', 'detailed', 'code-only', 'explain-only')
+   */
+  setResponseMode(mode) {
+    const validModes = ['brief', 'balanced', 'detailed', 'code-only', 'explain-only'];
+
+    if (!validModes.includes(mode)) {
+      throw new Error(`Invalid response mode: ${mode}. Valid modes: ${validModes.join(', ')}`);
+    }
+
+    this.responseMode = mode;
+    this.emit('debug', `Response mode updated to: ${mode}`);
+
+    // Note: DirectClaudeSpawner doesn't support dynamic system prompt updates
+    // The mode will be applied via message enhancement in sendPrompt
+  }
+
+  /**
+   * Get system prompt modifier for current response mode (Phase 4)
+   * @returns {string} System prompt modifier or empty string
+   * @private
+   */
+  getResponseModePrompt() {
+    if (this.responseMode === 'balanced') {
+      return ''; // No modification for balanced mode
+    }
+
+    return this.systemPromptModifiers[this.responseMode] || '';
+  }
+
+  /**
    * Send prompt to user's session
    * @param {string} userId - User identifier
    * @param {string} text - Prompt text
@@ -349,16 +389,24 @@ export class DirectClaudeSpawner extends EventEmitter {
       throw new Error(`No active session for user ${userId}`);
     }
 
+    // Enhance prompt with response mode modifier (Phase 4)
+    let enhancedText = text;
+    const modePrompt = this.getResponseModePrompt();
+
+    if (modePrompt) {
+      enhancedText = `[RESPONSE MODE INSTRUCTION: ${modePrompt}]\n\n${text}`;
+    }
+
     const message = {
       type: 'user',
       message: {
         role: 'user',
-        content: [{ type: 'text', text }]
+        content: [{ type: 'text', text: enhancedText }]
       }
     };
 
     session.child.stdin.write(JSON.stringify(message) + '\n');
-    this.emit('prompt-sent', { userId, text });
+    this.emit('prompt-sent', { userId, text: enhancedText });
   }
 
   /**

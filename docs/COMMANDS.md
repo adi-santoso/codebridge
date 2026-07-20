@@ -1,586 +1,176 @@
-# CodeBridge - Commands Reference
+# CodeBridge — Commands Reference
 
-Complete reference untuk semua commands yang available di CodeBridge.
+Commands start with `/`. Send via WhatsApp to the bot number handled by your gateway.
 
----
+Non-slash messages are coding prompts (require session + project selected).
 
-## Command Format
-
-Commands diawali dengan `/` (slash). Kirim via WhatsApp ke bot.
-
-```
-/command [required_param] <optional_param>
-```
+Source of truth for registration: `src/commands/registry.js`.
 
 ---
 
-## Available Commands
+## Quick start
 
-### 1. `/help`
-
-Tampilkan daftar semua commands yang available.
-
-**Usage:**
 ```
+/newsession
+/projects
+/project <name>
+<your coding request>
+/status
 /help
 ```
 
-**Response:**
-```
-🤖 CodeBridge Commands
+---
 
-Project Management:
-• /projects - List all projects
-• /switch <name> - Switch project
-• /current - Current project info
+## General
 
-Session:
-• /status - Session status
-• /reset - Reset conversation
-• /history - View history
+| Command | Usage | Description |
+|---------|-------|-------------|
+| `/help` | `/help [command]` | List commands or detail one |
+| `/ping` | `/ping` | Liveness / latency |
+| `/version` | `/version` | Version & environment |
+| `/status` | `/status` | Session status & stats |
 
-System:
-• /help - Show this help
-
-For coding, just send your message normally:
-"fix bug di UserController"
-"add validation to form"
-```
-
-**Aliases:** None
+Aliases: `help`→`h`,`?` · `ping`→`heartbeat` · `version`→`v`,`ver` · `status`→`info`
 
 ---
 
-### 2. `/projects`
+## Session
 
-Tampilkan semua project yang tersedia dengan info detail.
+| Command | Usage | Description |
+|---------|-------|-------------|
+| `/newsession` | `/newsession` | Create session |
+| `/sessions` | `/sessions` | List your sessions |
+| `/session` | `/session <sessionId>` | Switch active session |
+| `/closesession` | `/closesession` | Close current session |
+| `/reset` | `/reset` | Clear conversation / start fresh |
+| `/history` | `/history [n]` | Recent command/history items |
+| `/save` | `/save <name>` | Snapshot session |
+| `/load` | `/load [name]` | Restore snapshot |
+| `/delete` | `/delete <name>` | Delete saved snapshot |
 
-**Usage:**
-```
-/projects
-```
-
-**Response:**
-```
-📁 Available Projects
-
-1. [*] laravel-api
-   📂 /home/user/projects/laravel-api
-   📝 Laravel REST API Project
-   
-2. [ ] react-dashboard
-   📂 /home/user/projects/react-dashboard
-   📝 React Admin Dashboard
-   
-3. [ ] mobile-app
-   📂 /home/user/projects/mobile-app
-   📝 React Native Mobile App
-
-Current: laravel-api
-Use /switch <name> to change
-```
-
-**Legend:**
-- `[*]` = Currently active
-- `[ ]` = Available
-
-**Aliases:** `/list`, `/ls`
+Aliases: `newsession`→`new`,`create` · `sessions`→`listses`
 
 ---
 
-### 3. `/switch [project_name]`
+## Project
 
-Switch ke project yang berbeda.
+| Command | Usage | Description |
+|---------|-------|-------------|
+| `/projects` | `/projects` | List available projects |
+| `/project` | `/project <name>` | Select project for current session |
 
-**Usage:**
-```
-/switch react-dashboard
-```
-
-**Parameters:**
-- `project_name` (required): Nama project yang valid (lihat di `/projects`)
-
-**Response (Success):**
-```
-✓ Switched to project: react-dashboard
-
-📂 Path: /home/user/projects/react-dashboard
-📝 React Admin Dashboard
-
-Ready to code! 🚀
-```
-
-**Response (Error - Project Not Found):**
-```
-❌ Project not found: invalid-name
-
-Available projects:
-• laravel-api
-• react-dashboard
-• mobile-app
-
-Use /projects to see details
-```
-
-**Notes:**
-- Switching akan kill current Claude instance dan spawn yang baru
-- Conversation history current project akan disimpan
-- New project mulai dengan clean context
-
-**Aliases:** `/use`, `/cd`
+After `/project`, state becomes `PROJECT_SELECTED` and Claude can be used for prompts.
 
 ---
 
-### 4. `/current`
+## Tools
 
-Tampilkan informasi project yang sedang aktif.
+| Command | Usage | Description |
+|---------|-------|-------------|
+| `/tools` | `/tools [category]` | List tools + status |
+| `/allow` | `/allow <tool>` | Enable tool |
+| `/deny` | `/deny <tool>` | Disable tool |
+| `/cancel` | `/cancel` | Stop current tool run |
+| `/retry` | `/retry [--force]` | Retry last failed tool |
+| `/toollog` | `/toollog [n]` | Tool execution history |
 
-**Usage:**
-```
-/current
-```
-
-**Response:**
-```
-📍 Current Project
-
-Name: laravel-api
-Path: /home/user/projects/laravel-api
-Description: Laravel REST API Project
-
-Settings:
-• Auto Commit: Off
-• Auto Test: On
-
-Last activity: 5 minutes ago
-Messages in session: 12
-```
-
-**Aliases:** `/pwd`, `/info`
+Claude-driven tools (when allowed): Bash, Read, Write, Edit.
 
 ---
 
-### 5. `/status`
+## Files
 
-Tampilkan status session lengkap.
+| Command | Usage | Description |
+|---------|-------|-------------|
+| `/ls` | `/ls [path]` | List directory |
+| `/cat` | `/cat <file>` | Read file |
+| `/tree` | `/tree [path] [--depth=N]` | Directory tree |
+| `/search` | `/search <pattern> [path] [--file=*.ext] [--i] [--limit=N]` | Search files |
+| `/diff` | `/diff [path]` | Git diff |
 
-**Usage:**
-```
-/status
-```
-
-**Response:**
-```
-📊 Session Status
-
-User: 628123456789
-Project: laravel-api
-Path: /home/user/projects/laravel-api
-
-Session Info:
-• Active since: 2024-06-27 17:30:00
-• Total messages: 15
-• Last activity: 2 minutes ago
-• Idle for: 2 minutes
-
-Instance:
-• Status: Running
-• Memory: ~250MB
-• Uptime: 15 minutes
-
-System:
-• Active sessions: 3 / 10
-• Server load: Normal
-```
-
-**Aliases:** `/stats`, `/info`
+Paths are project-scoped. Ignore patterns from `/ignore` affect listing/search.
 
 ---
 
-### 6. `/reset`
+## Response style
 
-Reset conversation history. Berguna untuk start fresh atau saat context terlalu panjang.
+| Command | Description |
+|---------|-------------|
+| `/brief` | Concise answers |
+| `/balanced` | Default balance |
+| `/detailed` | Verbose / thorough |
+| `/code-only` | Prefer code output only |
+| `/explain-only` | Prefer explanation without code |
 
-**Usage:**
-```
-/reset
-```
-
-**Confirmation Required:**
-```
-⚠️ Reset Conversation?
-
-This will:
-• Clear all conversation history
-• Keep current project (laravel-api)
-• Restart Claude instance
-
-Reply:
-• /reset confirm - Proceed
-• /reset cancel - Cancel
-```
-
-**After Confirmation:**
-```
-✓ Conversation reset
-
-Project: laravel-api still active
-Fresh context ready 🚀
-```
-
-**Notes:**
-- History akan dihapus dari memory
-- Session file akan di-backup sebelum direset
-- Current project tetap aktif
-
-**Aliases:** `/clear`, `/restart`
+Stored in user preferences; applied via spawner system-prompt modifiers.
 
 ---
 
-### 7. `/history [limit]`
+## Context
 
-Tampilkan conversation history.
+| Command | Usage | Description |
+|---------|-------|-------------|
+| `/focus` | `/focus [path]` | Working directory inside project |
+| `/context` | `/context <add\|list\|clear> [file]` | Extra files pinned into context |
+| `/ignore` | `/ignore <pattern\|list\|clear>` | gitignore-style ignore patterns |
 
-**Usage:**
-```
-/history
-/history 5
-```
-
-**Parameters:**
-- `limit` (optional): Jumlah messages terakhir (default: 10)
-
-**Response:**
-```
-📜 Conversation History (Last 5)
-
-1. [17:30] You:
-   fix bug di UserController line 45
-
-2. [17:31] Assistant:
-   I'll fix the bug in UserController...
-
-3. [17:35] You:
-   add validation to email field
-
-4. [17:36] Assistant:
-   I've added email validation...
-
-5. [17:40] You:
-   /status
-
-Total messages: 12
-Use /reset to clear history
-```
-
-**Aliases:** `/log`, `/messages`
+Limits (defaults): max context files / size via env (`CONTEXT_*`).
 
 ---
 
-## Coding Commands (No Slash)
+## Templates
 
-Untuk coding tasks, kirim message biasa **tanpa** slash `/`.
-
-### Examples:
-
-**Bug Fixing:**
-```
-fix bug di UserController line 45
-```
-
-**Feature Request:**
-```
-tambahkan validation email di form register
-```
-
-**Code Review:**
-```
-review function getUserData, ada yang bisa dioptimize?
-```
-
-**Refactoring:**
-```
-refactor UserController jadi lebih clean dan follow SOLID principles
-```
-
-**File Operations:**
-```
-create new file UserRepository.php with basic CRUD methods
-```
-
-**Testing:**
-```
-buatkan unit test untuk UserService
-```
-
-**Documentation:**
-```
-add docblock comments to all public methods in UserController
-```
-
-**Search:**
-```
-cari semua file yang pakai function deprecated_function
-```
+| Command | Usage | Description |
+|---------|-------|-------------|
+| `/ask` | `/ask <question>` | Short Q&A |
+| `/fix` | `/fix <error message>` | Fix-oriented prompt |
+| `/review` | `/review <file>` | Code review |
+| `/test` | `/test <file>` | Generate tests |
+| `/doc` | `/doc <file>` | Generate docs |
+| `/refactor` | `/refactor <file>` | Refactor suggestions |
 
 ---
 
-## Command Responses
+## Debug
 
-### Success Response Format
-```
-✓ [Action completed successfully]
-
-[Details or confirmation]
-```
-
-### Error Response Format
-```
-❌ [Error title]
-
-[Error details]
-[Suggested action]
-```
-
-### Info Response Format
-```
-ℹ️ [Information title]
-
-[Details]
-```
+| Command | Usage | Description |
+|---------|-------|-------------|
+| `/debug` | `/debug <on\|off>` | Toggle debug mode |
+| `/errors` | `/errors [n]` | Recent errors |
+| `/logs` | `/logs [n]` | Debug logs (needs debug on) |
+| `/metrics` | `/metrics` | Session metrics |
 
 ---
 
-## Tips & Best Practices
+## Admin
 
-### 1. Be Specific
-```
-❌ fix bug
-✓ fix null pointer exception di UserController line 45
-```
+Requires admin / superadmin role (`ADMIN_ENABLED`, `SUPERADMIN_INITIAL`, DB roles).
 
-### 2. One Task at a Time
-```
-❌ fix bug, add validation, dan refactor controller
-✓ fix bug di login form
-```
+| Command | Usage | Description |
+|---------|-------|-------------|
+| `/admin` | `/admin <subcommand> [args]` | Multi-user & system admin |
 
-Selesaikan satu task dulu, baru request yang lain.
+Subcommands (see `/help admin` or `docs/COMMAND_SYSTEM_PHASE9.md`): whitelist, roles, audit, system stats, etc.
 
-### 3. Provide Context
-```
-❌ update function
-✓ update function getUserData di UserService, return full user object instead of just ID
-```
-
-### 4. Use Commands for Management
-```
-✓ /switch laravel-api   (untuk ganti project)
-✓ /status               (untuk cek status)
-❌ ganti ke project laravel-api  (terlalu ambiguous)
-```
-
-### 5. Check Status When Needed
-Jika response lambat atau tidak ada response:
-```
-/status
-```
+Roles: `user` < `admin` < `superadmin`.
 
 ---
 
-## Advanced Usage
+## Middleware behavior
 
-### Multi-line Prompts
+All registered commands pass through:
 
-WhatsApp support multi-line messages:
-
-```
-update UserController:
-1. Add email validation
-2. Add rate limiting
-3. Improve error messages
-```
-
-### Code Snippets
-
-Kirim code snippet untuk review atau fix:
-
-```
-review this code:
-
-public function login($email, $password) {
-    $user = User::where('email', $email)->first();
-    return $user;
-}
-```
-
-### Context from Previous Messages
-
-Claude akan ingat conversation history:
-
-```
-You: create User model
-Bot: [creates User model]
-
-You: sekarang buatkan migration untuk model itu
-Bot: [creates migration based on previous User model]
-```
+1. Parse (`/name args`)
+2. Auth / whitelist
+3. Role check
+4. Rate limit (per-command config)
+5. Handler
+6. Optional history log
 
 ---
 
-## Command Aliases
+## Notes
 
-| Command | Aliases |
-|---------|---------|
-| `/projects` | `/list`, `/ls` |
-| `/switch` | `/use`, `/cd` |
-| `/current` | `/pwd`, `/info` |
-| `/status` | `/stats` |
-| `/reset` | `/clear`, `/restart` |
-| `/history` | `/log`, `/messages` |
-
----
-
-## Error Messages
-
-### Common Errors
-
-**1. Project Not Found**
-```
-❌ Project not found: wrong-name
-
-Use /projects to see available projects
-```
-
-**2. Rate Limit**
-```
-⏱️ Too Many Requests
-
-You've sent too many messages.
-Please wait 30 seconds.
-```
-
-**3. Session Limit Reached**
-```
-⚠️ Server Busy
-
-Max concurrent sessions reached.
-Please try again in a few minutes.
-```
-
-**4. Invalid Command**
-```
-❌ Unknown command: /invalid
-
-Type /help to see available commands
-```
-
-**5. Claude Instance Error**
-```
-❌ Coding Assistant Error
-
-Failed to process your request.
-Retrying... (attempt 1/3)
-```
-
----
-
-## Special Features
-
-### 1. Auto-Retry
-
-Jika request gagal, bot akan auto-retry up to 3 times:
-
-```
-⚠️ Request failed, retrying... (1/3)
-```
-
-### 2. Typing Indicator
-
-Bot akan show "typing..." saat processing request.
-
-### 3. Long Response Handling
-
-Jika response terlalu panjang, akan di-split ke multiple messages:
-
-```
-[Message 1/3]
-...
-
-[Message 2/3]
-...
-
-[Message 3/3]
-...
-```
-
-### 4. Code Formatting
-
-Code akan diformat dengan ``` (triple backtick) untuk readability:
-
-```
-```php
-public function example() {
-    return true;
-}
-```
-```
-
----
-
-## Troubleshooting Commands
-
-### Bot tidak respond?
-
-1. Check status:
-```
-/status
-```
-
-2. Reset jika perlu:
-```
-/reset
-```
-
-3. Contact admin jika masih tidak respond
-
-### Wrong project active?
-
-```
-/current      # Check current project
-/switch <name>  # Switch to correct project
-```
-
-### Lost conversation context?
-
-```
-/history     # Review recent messages
-```
-
-### Need fresh start?
-
-```
-/reset       # Clear history, keep project
-/switch <name>  # Change project entirely
-```
-
----
-
-## Quick Reference Card
-
-```
-Essential Commands:
-/help       - Show help
-/projects   - List projects
-/switch     - Change project
-/status     - Check status
-/reset      - Clear history
-
-For coding: just send your message!
-No slash needed.
-```
-
----
-
-**Last Updated:** 2024-06-27  
-**Version:** 1.0
+- WhatsApp message length ~4k — long replies are auto-chunked
+- Coding prompts are async; you may get ack then full answer
+- Timeout messages do not always mean Claude stopped; late replies can still arrive

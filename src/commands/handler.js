@@ -18,6 +18,14 @@ import { CommandParser } from './parser.js';
 
 // Import command handlers
 import * as basicHandlers from './handlers/basic.js';
+import * as sessionHandlers from './handlers/session.js';
+import * as toolHandlers from './handlers/tool.js';
+import * as fileHandlers from './handlers/file.js';
+import * as debugHandlers from './handlers/debug.js';
+import * as responseHandlers from './handlers/response.js';
+import * as contextHandlers from './handlers/context.js';
+import * as templateHandlers from './handlers/template.js';
+import * as adminHandlers from './handlers/admin.js';
 import { SessionCommands } from './session-commands.js';
 
 export class CommandHandler {
@@ -28,25 +36,35 @@ export class CommandHandler {
    * @param {SessionDatabase} options.db
    * @param {string} options.projectRootPath
    * @param {Set|null} options.allowedNumbers - Whitelist
+   * @param {Object} options.projectRegistry - Project registry
    */
   constructor(options) {
     this.sessionManager = options.sessionManager;
     this.db = options.db;
     this.projectRootPath = options.projectRootPath;
+    this.projectRegistry = options.projectRegistry;
     this.allowedNumbers = options.allowedNumbers;
     this.logger = new Logger('CommandHandler');
 
     // Get command registry
     this.registry = getRegistry();
 
-    // Session commands instance (for existing commands)
+    // Session commands instance (for existing commands - backward compatibility)
     this.sessionCommands = new SessionCommands({
       sessionManager: this.sessionManager,
       projectRootPath: this.projectRootPath
     });
 
-    // Basic handlers
+    // Handler modules
     this.basicHandlers = basicHandlers;
+    this.sessionHandlers = sessionHandlers;
+    this.toolHandlers = toolHandlers;
+    this.fileHandlers = fileHandlers;
+    this.debugHandlers = debugHandlers;
+    this.responseHandlers = responseHandlers;
+    this.contextHandlers = contextHandlers;
+    this.templateHandlers = templateHandlers;
+    this.adminHandlers = adminHandlers;
 
     // Middleware chain
     this.middlewareChain = [...defaultMiddlewareChain];
@@ -96,10 +114,19 @@ export class CommandHandler {
       command,
       args,
       rawArgs,
+      flags: parsed.flags || {},
       commandConfig,
       sessionManager: this.sessionManager,
       sessionCommands: this.sessionCommands,
       basicHandlers: this.basicHandlers,
+      sessionHandlers: this.sessionHandlers,
+      toolHandlers: this.toolHandlers,
+      fileHandlers: this.fileHandlers,
+      debugHandlers: this.debugHandlers,
+      responseHandlers: this.responseHandlers,
+      contextHandlers: this.contextHandlers,
+      templateHandlers: this.templateHandlers,
+      adminHandlers: this.adminHandlers,
       db: this.db,
       allowedNumbers: this.allowedNumbers,
       logger: this.logger,
@@ -107,7 +134,8 @@ export class CommandHandler {
       sessionId: session ? session.sessionId : null,
       response: null,
       registry: this.registry,
-      projectRootPath: this.projectRootPath
+      projectRootPath: this.projectRootPath,
+      projectRegistry: this.projectRegistry
     };
 
     // Execute middleware chain
@@ -163,9 +191,86 @@ export class CommandHandler {
         const handlerName = handlerPath.split('.')[1];
         result = await this.basicHandlers[handlerName](context);
       } else if (handlerPath.startsWith('session.')) {
-        // Use existing SessionCommands for backward compatibility
-        const commandName = handlerPath.split('.')[1];
-        result = await this.executeSessionCommand(context, commandName);
+        // Use new session handlers (Phase 2)
+        const handlerName = handlerPath.split('.')[1];
+        if (this.sessionHandlers[handlerName]) {
+          result = await this.sessionHandlers[handlerName](context);
+        } else {
+          // Fallback to old SessionCommands for backward compatibility
+          result = await this.executeSessionCommand(context, handlerName);
+        }
+      } else if (handlerPath.startsWith('tool.')) {
+        // Tool handlers (Phase 3)
+        const handlerName = handlerPath.split('.')[1];
+        result = await this.toolHandlers[handlerName](context);
+      } else if (handlerPath.startsWith('file.')) {
+        // File handlers (Phase 4)
+        const handlerName = handlerPath.split('.')[1];
+        result = await this.fileHandlers[handlerName](context);
+      } else if (handlerPath.startsWith('debug.')) {
+        // Debug handlers (Phase 6)
+        const handlerName = handlerPath.split('.')[1];
+
+        // Special handling for /debug on|off
+        if (handlerName === 'debugCommand') {
+          const action = context.args[0].toLowerCase();
+          if (action === 'on') {
+            result = await this.debugHandlers.debugOn(context);
+          } else {
+            result = await this.debugHandlers.debugOff(context);
+          }
+        } else {
+          result = await this.debugHandlers[handlerName](context);
+        }
+      } else if (handlerPath.startsWith('response.')) {
+        // Response control handlers (Phase 4)
+        const handlerName = handlerPath.split('.')[1];
+        result = await this.responseHandlers[handlerName](context);
+      } else if (handlerPath.startsWith('context.')) {
+        // Context management handlers (Phase 7)
+        const handlerName = handlerPath.split('.')[1];
+
+        // Special handling for /context and /ignore sub-commands
+        if (handlerName === 'contextAdd') {
+          // /context <add|list|clear>
+          const subCommand = context.args[0];
+          if (!subCommand) {
+            result = '❌ Missing sub-command.\n\n*Usage:* /context <add|list|clear> [file]\n*Examples:*\n  /context add src/config.js\n  /context list\n  /context clear';
+          } else if (subCommand === 'add') {
+            // Remove 'add' from args
+            context.args = context.args.slice(1);
+            result = await this.contextHandlers.contextAdd(context);
+          } else if (subCommand === 'list') {
+            result = await this.contextHandlers.contextList(context);
+          } else if (subCommand === 'clear') {
+            result = await this.contextHandlers.contextClear(context);
+          } else {
+            result = `❌ Unknown sub-command: ${subCommand}\n\n*Usage:* /context <add|list|clear>`;
+          }
+        } else if (handlerName === 'ignore') {
+          // /ignore <pattern|list|clear>
+          const arg = context.args[0];
+          if (!arg) {
+            result = await this.contextHandlers.ignore(context);
+          } else if (arg === 'list') {
+            result = await this.contextHandlers.ignoreList(context);
+          } else if (arg === 'clear') {
+            result = await this.contextHandlers.ignoreClear(context);
+          } else {
+            // It's a pattern
+            result = await this.contextHandlers.ignore(context);
+          }
+        } else {
+          result = await this.contextHandlers[handlerName](context);
+        }
+      } else if (handlerPath.startsWith('template.')) {
+        // Template handlers (Phase 8)
+        const handlerName = handlerPath.split('.')[1];
+        result = await this.templateHandlers[handlerName](context);
+      } else if (handlerPath.startsWith('admin.')) {
+        // Admin handlers (Phase 9)
+        const handlerName = handlerPath.split('.')[1];
+        result = await this.adminHandlers[handlerName](context);
       } else {
         throw new Error(`Unknown handler path: ${handlerPath}`);
       }
@@ -193,6 +298,25 @@ export class CommandHandler {
 
     } catch (error) {
       this.logger.error(`Handler execution failed for ${commandConfig.name}:`, error.message);
+
+      // Log error to database (Phase 6)
+      if (this.db && this.db.logError && context.sessionId) {
+        try {
+          this.db.logError(
+            context.userId,
+            context.sessionId,
+            'COMMAND_ERROR',
+            error.message,
+            error.stack,
+            {
+              command: context.command,
+              args: context.args
+            }
+          );
+        } catch (dbError) {
+          this.logger.error('Failed to log error to database:', dbError.message);
+        }
+      }
 
       context.response = {
         success: false,

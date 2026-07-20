@@ -24,6 +24,7 @@ export class MessageHandler extends EventEmitter {
    * @param {Object} options
    * @param {SessionManager} options.sessionManager
    * @param {string} [options.projectRootPath] - Root path for projects
+   * @param {ProjectRegistry} [options.projectRegistry] - Project registry
    */
   constructor(options) {
     super(); // Initialize EventEmitter
@@ -45,6 +46,7 @@ export class MessageHandler extends EventEmitter {
       sessionManager: this.sessionManager,
       db: this.db,
       projectRootPath: options.projectRootPath,
+      projectRegistry: options.projectRegistry,
       allowedNumbers: this.parseAllowedNumbers(process.env.ALLOWED_WHATSAPP_NUMBERS)
     });
 
@@ -341,46 +343,20 @@ export class MessageHandler extends EventEmitter {
     if (!session) {
       return {
         requestId,
-        response: `👋 Welcome to CodeBridge!\n\n` +
-                  `I'm your AI coding assistant powered by Claude. To get started:\n\n` +
-                  `📋 *Session Management:*\n` +
-                  `/newsession - Create new session\n` +
-                  `/sessions - List all sessions\n` +
-                  `/session <id> - Switch to session\n` +
-                  `/closesession - Close current session\n\n` +
-                  `📁 *Project Management:*\n` +
-                  `/projects - List available projects\n` +
-                  `/project <name> - Select project\n\n` +
-                  `💬 *Other Commands:*\n` +
-                  `/clear - Clear session history\n` +
-                  `/status - Show current status\n` +
-                  `/help - Show this help\n\n` +
-                  `*Quick Start:*\n` +
-                  `1️⃣ Type: /newsession\n` +
-                  `2️⃣ Type: /projects\n` +
-                  `3️⃣ Type: /project <name>\n` +
-                  `4️⃣ Start chatting!\n\n` +
-                  `Let's build something amazing together! 🚀`,
-        isError: false
+        response: `❌ No active session.\n\n` +
+                  `Use /newsession to create a session first.\n\n` +
+                  `Type /help to see all available commands.`,
+        isError: true
       };
     }
 
     if (session.state !== 'PROJECT_SELECTED') {
       return {
         requestId,
-        response: `📁 *Project Selection Required*\n\n` +
-                  `You have an active session, but no project selected yet.\n\n` +
-                  `To select a project:\n` +
-                  `1️⃣ Type: /projects (to see available projects)\n` +
-                  `2️⃣ Type: /project <name> (to select one)\n\n` +
-                  `Example: /project codebridge\n\n` +
-                  `Once a project is selected, I can help you with:\n` +
-                  `• Writing and reviewing code\n` +
-                  `• Debugging issues\n` +
-                  `• Explaining concepts\n` +
-                  `• Refactoring code\n` +
-                  `• And much more!`,
-        isError: false
+        response: `❌ No project selected.\n\n` +
+                  `Use /setproject <path> to set a project first.\n\n` +
+                  `Type /help to see all available commands.`,
+        isError: true
       };
     }
 

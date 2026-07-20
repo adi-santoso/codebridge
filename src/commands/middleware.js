@@ -256,6 +256,53 @@ export async function sessionCheckMiddleware(context, next) {
 }
 
 /**
+ * Role check middleware (Phase 9)
+ * Check if user has required role for command
+ */
+export async function roleCheckMiddleware(context, next) {
+  const { userId, commandConfig, db, logger } = context;
+
+  // Get required role from command config
+  const requiredRole = commandConfig.requiredRole || 'user';
+
+  // If only user role required, everyone passes
+  if (requiredRole === 'user') {
+    return next();
+  }
+
+  // Get user's role from database
+  const userRole = db.getUserRole(userId);
+
+  // Role hierarchy
+  const roleHierarchy = {
+    user: 0,
+    admin: 1,
+    superadmin: 2
+  };
+
+  const userLevel = roleHierarchy[userRole] || 0;
+  const requiredLevel = roleHierarchy[requiredRole] || 0;
+
+  // Check if user has sufficient role
+  if (userLevel < requiredLevel) {
+    logger.warn(`Role check failed for ${userId}: has ${userRole}, needs ${requiredRole}`);
+
+    context.response = {
+      success: false,
+      error: 'Insufficient privileges',
+      code: 'ROLE_REQUIRED',
+      message: `❌ *Insufficient Privileges*\n\n` +
+               `This command requires ${requiredRole} role.\n` +
+               `Your role: ${userRole}`,
+      timestamp: Date.now()
+    };
+    return; // Stop chain
+  }
+
+  return next();
+}
+
+/**
  * Logging middleware - log command execution
  */
 export async function loggingMiddleware(context, next) {
@@ -391,6 +438,7 @@ setInterval(cleanupRateLimitStore, 5 * 60 * 1000);
 export const defaultMiddlewareChain = [
   authMiddleware,
   sessionCheckMiddleware,
+  roleCheckMiddleware,
   rateLimitMiddleware,
   validationMiddleware,
   loggingMiddleware,
@@ -402,6 +450,7 @@ export default {
   rateLimitMiddleware,
   validationMiddleware,
   sessionCheckMiddleware,
+  roleCheckMiddleware,
   loggingMiddleware,
   responseFormattingMiddleware,
   defaultMiddlewareChain,

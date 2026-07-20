@@ -10,10 +10,13 @@
  */
 
 import { EventEmitter } from 'events';
+import fs from 'fs';
+import path from 'path';
 import { DirectClaudeSpawner } from './direct-spawner.js';
 import { SessionDatabase } from '../database/session-db.js';
 import { ToolExecutor } from '../tools/executor.js';
 import { Logger } from '../utils/logger.js';
+import { matchesPattern } from '../utils/ignore-matcher.js';
 
 export class SessionManager extends EventEmitter {
   /**
@@ -224,13 +227,17 @@ export class SessionManager extends EventEmitter {
     // Update database
     this.db.setSessionProject(sessionId, projectPath);
 
+    // Get user's response mode preference
+    const session = this.db.getSessionById(sessionId);
+    const responseMode = this.db.getUserPreference(session.userId, 'responseMode') || 'balanced';
+
     // Create DirectClaudeSpawner for this session
     const spawner = new DirectClaudeSpawner({
-      projectPath
+      projectPath,
+      responseMode // Pass response mode to spawner
     });
 
     // Setup event handlers
-    const session = this.db.getSessionById(sessionId);
     this.setupSpawnerEvents(spawner, sessionId, session.userId);
 
     // Store spawner
@@ -571,6 +578,491 @@ ${message}`;
    */
   getSession(sessionId) {
     return this.db.getSessionById(sessionId);
+  }
+
+  /**
+   * Set response mode for user's active session (Phase 4)
+   * @param {string} userId
+   * @param {string} mode - 'brief', 'balanced', 'detailed', 'code-only', 'explain-only'
+   */
+  setResponseMode(userId, mode) {
+    const session = this.getActiveSession(userId);
+    if (!session) {
+      throw new Error('No active session');
+    }
+
+    // Get spawner
+    const spawner = this.spawners.get(session.sessionId);
+
+    if (spawner && typeof spawner.setResponseMode === 'function') {
+      spawner.setResponseMode(mode);
+      this.logger.info(`Response mode set to "${mode}" for session ${session.sessionId}`);
+    } else {
+      // Spawner doesn't support dynamic mode updates
+      // Mode will apply on next spawner restart (e.g., after /reset)
+      this.logger.warn(`Spawner for session ${session.sessionId} does not support dynamic response mode updates. Mode will apply after session restart.`);
+    }
+  }
+
+  /**
+   * Get current response mode for user (Phase 4)
+   * @param {string} userId
+   * @returns {string} Current response mode
+   */
+  getResponseMode(userId) {
+    const session = this.getActiveSession(userId);
+    if (!session) {
+      return 'balanced';
+    }
+
+    const spawner = this.spawners.get(session.sessionId);
+    if (spawner && spawner.responseMode) {
+      return spawner.responseMode;
+    }
+
+    // Fall back to database preference
+    return this.db.getUserPreference(userId, 'responseMode') || 'balanced';
+  }
+
+  /**
+   * Get session snapshot for saving (Phase 2)
+   * @param {string} userId
+   * @returns {Object} Snapshot object
+   */
+  getSessionSnapshot(userId) {
+    const session = this.getActiveSession(userId);
+
+    if (!session) {
+      throw new Error('No active session to snapshot');
+    }
+
+    if (session.state !== 'PROJECT_SELECTED') {
+      throw new Error('Cannot snapshot session without project selected');
+    }
+
+    // Get spawner to extract conversation history
+    const spawner = this.spawners.get(session.sessionId);
+    const messages = [];
+
+    if (spawner) {
+      // Extract conversation from spawner
+      // Note: DirectClaudeSpawner doesn't store full conversation history
+      // This is a limitation we need to document
+      const claudeSession = spawner.sessions.get(userId);
+      if (claudeSession) {
+        // We can only capture metadata, not full history
+        // This is because Claude CLI doesn't expose conversation buffer
+        this.logger.warn('Conversation history not available - only metadata will be saved');
+      }
+    }
+
+    const now = Date.now();
+
+    return {
+      sessionId: session.sessionId,
+      userId: session.userId,
+      projectPath: session.projectPath,
+      projectName: session.projectPath ? session.projectPath.split('/').pop() : null,
+      state: session.state,
+      messages: messages, // Empty - limitation of DirectClaudeSpawner
+      metadata: {
+        createdAt: session.createdAt,
+        lastActive: session.lastActive,
+        messageCount: 0, // We don't track this
+        savedAt: now
+      }
+    };
+  }
+
+  /**
+   * Restore session from snapshot (Phase 2)
+   * @param {string} userId
+   * @param {object} snapshot - Session snapshot
+   * @returns {Object} Restored session
+   */
+  async restoreSessionFromSnapshot(userId, snapshot) {
+    this.logger.info(`Restoring session from snapshot for user ${userId}`);
+
+    // Close current session if exists
+    const currentSession = this.getActiveSession(userId);
+    if (currentSession) {
+      await this.closeSession(currentSession.sessionId);
+    }
+
+    // Create new session
+    const newSession = this.createSession(userId);
+
+    // Set project
+    if (snapshot.projectPath) {
+      this.setSessionProject(newSession.sessionId, snapshot.projectPath);
+    }
+
+    // Note: We cannot restore conversation history
+    // because DirectClaudeSpawner doesn't support it
+    // This is documented in user docs
+
+    this.logger.success(`Session restored: ${newSession.sessionId}`);
+
+    return newSession;
+  }
+
+  /**
+   * Set working directory for session (Phase 7)
+   * @param {string} userId
+   * @param {string} relativePath - Path relative to project root
+   */
+  setWorkingDirectory(userId, relativePath) {
+    const session = this.getActiveSession(userId);
+    if (!session) {
+      throw new Error('No active session');
+    }
+
+    if (session.state !== 'PROJECT_SELECTED') {
+      throw new Error('No project selected');
+    }
+
+    // Resolve path relative to project
+    const absolutePath = path.resolve(session.projectPath, relativePath);
+
+    // Security: ensure it's within project
+    if (!absolutePath.startsWith(session.projectPath)) {
+      throw new Error('Path must be within project directory');
+    }
+
+    // Check it exists and is a directory
+    if (!fs.existsSync(absolutePath)) {
+      throw new Error('Directory does not exist');
+    }
+
+    if (!fs.statSync(absolutePath).isDirectory()) {
+      throw new Error('Path is not a directory');
+    }
+
+    // Update session (store in database)
+    const persistEnabled = process.env.CONTEXT_PERSIST_TO_DB === 'true';
+    if (persistEnabled) {
+      this.db.saveSessionContext(userId, session.sessionId, 'workdir', relativePath, null);
+    }
+
+    // Update in-memory cache (we need to extend the session object)
+    // For now, we'll store it in the database and retrieve it when needed
+    this.logger.info(`Working directory set for user ${userId}: ${relativePath}`);
+  }
+
+  /**
+   * Get working directory for session (Phase 7)
+   * @param {string} userId
+   * @returns {string} Absolute path to working directory
+   */
+  getWorkingDirectory(userId) {
+    const session = this.getActiveSession(userId);
+    if (!session) {
+      throw new Error('No active session');
+    }
+
+    if (session.state !== 'PROJECT_SELECTED') {
+      throw new Error('No project selected');
+    }
+
+    // Get from database
+    const persistEnabled = process.env.CONTEXT_PERSIST_TO_DB === 'true';
+    if (persistEnabled) {
+      const contexts = this.db.getSessionContext(userId, session.sessionId, 'workdir');
+      if (contexts && contexts.length > 0) {
+        const relativePath = contexts[0].contextValue;
+        return path.resolve(session.projectPath, relativePath);
+      }
+    }
+
+    // Default: project root
+    return session.projectPath;
+  }
+
+  /**
+   * Add context file (Phase 7)
+   * @param {string} userId
+   * @param {string} filePath - Path relative to working directory or project
+   * @returns {Object} File object
+   */
+  async addContextFile(userId, filePath) {
+    const session = this.getActiveSession(userId);
+    if (!session) {
+      throw new Error('No active session');
+    }
+
+    if (session.state !== 'PROJECT_SELECTED') {
+      throw new Error('No project selected');
+    }
+
+    // Resolve path (relative to working directory or project)
+    let basePath;
+    try {
+      basePath = this.getWorkingDirectory(userId);
+    } catch {
+      basePath = session.projectPath;
+    }
+
+    const absolutePath = path.resolve(basePath, filePath);
+
+    // Security check
+    if (!absolutePath.startsWith(session.projectPath)) {
+      throw new Error('File must be within project directory');
+    }
+
+    // Check exists
+    if (!fs.existsSync(absolutePath)) {
+      throw new Error('File does not exist');
+    }
+
+    const stats = fs.statSync(absolutePath);
+
+    // Check if it's a file
+    if (!stats.isFile()) {
+      throw new Error('Path is not a file');
+    }
+
+    // Check size
+    const maxSize = parseInt(process.env.CONTEXT_MAX_FILE_SIZE || '102400');
+    if (stats.size > maxSize) {
+      const formatBytes = (bytes) => {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
+      };
+      throw new Error(`File too large (${formatBytes(stats.size)}). Max: ${formatBytes(maxSize)}`);
+    }
+
+    // Check total context size
+    const currentContext = this.getContextFiles(userId);
+    const totalSize = currentContext.reduce((sum, f) => sum + (f.size || 0), 0) + stats.size;
+    const maxTotal = parseInt(process.env.CONTEXT_MAX_TOTAL_SIZE || '1048576');
+
+    if (totalSize > maxTotal) {
+      const formatBytes = (bytes) => {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
+      };
+      throw new Error(`Total context size would exceed ${formatBytes(maxTotal)}`);
+    }
+
+    // Read file
+    const content = fs.readFileSync(absolutePath, 'utf-8');
+    const lines = content.split('\n').length;
+
+    // Create context object
+    const relativePath = path.relative(session.projectPath, absolutePath);
+    const fileObj = {
+      path: relativePath,
+      absolutePath,
+      size: stats.size,
+      lines,
+      addedAt: Date.now()
+    };
+
+    // Save to database
+    const persistEnabled = process.env.CONTEXT_PERSIST_TO_DB === 'true';
+    if (persistEnabled) {
+      this.db.saveSessionContext(
+        userId,
+        session.sessionId,
+        'file',
+        relativePath,
+        JSON.stringify({ size: stats.size, lines, addedAt: fileObj.addedAt })
+      );
+    }
+
+    this.logger.info(`Context file added for user ${userId}: ${relativePath}`);
+
+    return fileObj;
+  }
+
+  /**
+   * Get context files (Phase 7)
+   * @param {string} userId
+   * @returns {Array<Object>} Array of file objects
+   */
+  getContextFiles(userId) {
+    const session = this.getActiveSession(userId);
+    if (!session) {
+      return [];
+    }
+
+    if (session.state !== 'PROJECT_SELECTED') {
+      return [];
+    }
+
+    const persistEnabled = process.env.CONTEXT_PERSIST_TO_DB === 'true';
+    if (!persistEnabled) {
+      return [];
+    }
+
+    const contexts = this.db.getSessionContext(userId, session.sessionId, 'file');
+    if (!contexts || contexts.length === 0) {
+      return [];
+    }
+
+    return contexts.map(ctx => {
+      const metadata = ctx.metadata ? JSON.parse(ctx.metadata) : {};
+      return {
+        path: ctx.contextValue,
+        absolutePath: path.resolve(session.projectPath, ctx.contextValue),
+        size: metadata.size || 0,
+        lines: metadata.lines || 0,
+        addedAt: metadata.addedAt || ctx.createdAt
+      };
+    });
+  }
+
+  /**
+   * Clear all context files (Phase 7)
+   * @param {string} userId
+   */
+  clearContext(userId) {
+    const session = this.getActiveSession(userId);
+    if (!session) {
+      throw new Error('No active session');
+    }
+
+    if (session.state !== 'PROJECT_SELECTED') {
+      throw new Error('No project selected');
+    }
+
+    const persistEnabled = process.env.CONTEXT_PERSIST_TO_DB === 'true';
+    if (persistEnabled) {
+      this.db.clearSessionContext(userId, session.sessionId, 'file');
+    }
+
+    this.logger.info(`Context cleared for user ${userId}`);
+  }
+
+  /**
+   * Add ignore pattern (Phase 7)
+   * @param {string} userId
+   * @param {string} pattern - Ignore pattern
+   */
+  addIgnorePattern(userId, pattern) {
+    const session = this.getActiveSession(userId);
+    if (!session) {
+      throw new Error('No active session');
+    }
+
+    if (session.state !== 'PROJECT_SELECTED') {
+      throw new Error('No project selected');
+    }
+
+    // Validate pattern
+    if (!pattern || pattern.trim().length === 0) {
+      throw new Error('Invalid pattern');
+    }
+
+    const trimmedPattern = pattern.trim();
+
+    // Save to database
+    const persistEnabled = process.env.CONTEXT_PERSIST_TO_DB === 'true';
+    if (persistEnabled) {
+      this.db.saveSessionContext(
+        userId,
+        session.sessionId,
+        'ignore',
+        trimmedPattern,
+        JSON.stringify({ addedAt: Date.now() })
+      );
+    }
+
+    this.logger.info(`Ignore pattern added for user ${userId}: ${trimmedPattern}`);
+  }
+
+  /**
+   * Get ignore patterns (Phase 7)
+   * @param {string} userId
+   * @returns {Array<Object>} Array of pattern objects
+   */
+  getIgnorePatterns(userId) {
+    const session = this.getActiveSession(userId);
+    if (!session) {
+      return [];
+    }
+
+    if (session.state !== 'PROJECT_SELECTED') {
+      return [];
+    }
+
+    const persistEnabled = process.env.CONTEXT_PERSIST_TO_DB === 'true';
+    if (!persistEnabled) {
+      return [];
+    }
+
+    const contexts = this.db.getSessionContext(userId, session.sessionId, 'ignore');
+    if (!contexts || contexts.length === 0) {
+      return [];
+    }
+
+    return contexts.map(ctx => {
+      const metadata = ctx.metadata ? JSON.parse(ctx.metadata) : {};
+      return {
+        pattern: ctx.contextValue,
+        addedAt: metadata.addedAt || ctx.createdAt
+      };
+    });
+  }
+
+  /**
+   * Clear ignore patterns (Phase 7)
+   * @param {string} userId
+   */
+  clearIgnorePatterns(userId) {
+    const session = this.getActiveSession(userId);
+    if (!session) {
+      throw new Error('No active session');
+    }
+
+    if (session.state !== 'PROJECT_SELECTED') {
+      throw new Error('No project selected');
+    }
+
+    const persistEnabled = process.env.CONTEXT_PERSIST_TO_DB === 'true';
+    if (persistEnabled) {
+      this.db.clearSessionContext(userId, session.sessionId, 'ignore');
+    }
+
+    this.logger.info(`Ignore patterns cleared for user ${userId}`);
+  }
+
+  /**
+   * Check if path is ignored (Phase 7)
+   * @param {string} userId
+   * @param {string} targetPath - Path to check (relative to project)
+   * @returns {boolean} True if path should be ignored
+   */
+  isPathIgnored(userId, targetPath) {
+    const session = this.getActiveSession(userId);
+    if (!session) {
+      return false;
+    }
+
+    // Get user patterns
+    const userPatterns = this.getIgnorePatterns(userId).map(p => p.pattern);
+
+    // Get default patterns
+    const defaultPatterns = (process.env.IGNORE_DEFAULT_PATTERNS || 'node_modules,dist,.git')
+      .split(',')
+      .map(p => p.trim())
+      .filter(p => p.length > 0);
+
+    // Combine patterns
+    const allPatterns = [...defaultPatterns, ...userPatterns];
+
+    if (allPatterns.length === 0) {
+      return false;
+    }
+
+    // Use matcher from ignore-matcher utility
+    return matchesPattern(targetPath, allPatterns);
   }
 
   /**

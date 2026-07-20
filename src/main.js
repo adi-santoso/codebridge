@@ -22,6 +22,7 @@ import GatewayClient from './gateway-client.js';
 import SessionRoomManager from './session-room-manager.js';
 import SessionManager from './claude/session-manager.js';
 import MessageHandler from './whatsapp/message-handler.js';
+import { ProjectRegistry } from './utils/project-registry.js';
 import { Logger } from './utils/logger.js';
 
 // Load environment variables
@@ -54,25 +55,33 @@ class CodeBridge {
       });
       await this.sessionManager.initialize();
 
-      // 2. Initialize MessageHandler
+      // 2. Initialize ProjectRegistry
+      this.logger.info('[CodeBridge] Initializing ProjectRegistry...');
+      this.projectRegistry = new ProjectRegistry({
+        rootPath: process.env.PROJECT_ROOT_PATH || 'D:/working/gatrion',
+        projectPaths: process.env.PROJECT_PATHS
+      });
+
+      // 3. Initialize MessageHandler
       this.logger.info('[CodeBridge] Initializing MessageHandler...');
       this.messageHandler = new MessageHandler({
         sessionManager: this.sessionManager,
-        projectRootPath: process.env.PROJECT_ROOT_PATH || 'D:/working/gatrion'
+        projectRootPath: process.env.PROJECT_ROOT_PATH || 'D:/working/gatrion',
+        projectRegistry: this.projectRegistry
       });
 
-      // 3. Initialize GatewayClient
+      // 4. Initialize GatewayClient
       this.logger.info('[CodeBridge] Initializing GatewayClient...');
       this.gatewayClient = new GatewayClient({
         gatewayUrl: process.env.GATEWAY_URL,
         authKey: process.env.GATEWAY_AUTH_KEY
       });
 
-      // 4. Connect to Gateway
+      // 5. Connect to Gateway
       this.logger.info('[CodeBridge] Connecting to Gateway...');
       await this.gatewayClient.connect();
 
-      // 5. Initialize SessionRoomManager
+      // 6. Initialize SessionRoomManager
       this.logger.info('[CodeBridge] Initializing SessionRoomManager...');
       this.sessionRoomManager = new SessionRoomManager(
         this.gatewayClient,
@@ -80,15 +89,15 @@ class CodeBridge {
       );
       this.sessionRoomManager.initialize();
 
-      // 6. Setup Gateway event handlers
+      // 7. Setup Gateway event handlers
       this.setupGatewayHandlers();
 
-      // 7. Setup SessionManager hooks
+      // 8. Setup SessionManager hooks
       this.setupSessionHooks();
 
       this.logger.info('[CodeBridge] Initialization completed successfully ✅');
 
-      // 8. Manual join existing Gateway sessions (if specified in env)
+      // 9. Manual join existing Gateway sessions (if specified in env)
       await this.joinExistingGatewaySessions();
 
       this.printStatus();

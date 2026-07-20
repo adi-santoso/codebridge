@@ -201,11 +201,13 @@ export async function status(context) {
   // System-wide stats
   const totalSessions = sessionManager.getTotalSessions();
   const activeSessions = sessionManager.getActiveSessions();
+  const spawnedProcesses = sessionManager.spawners?.size || 0;
 
   response += `*System Stats:*\n`;
   response += `  Total sessions: ${totalSessions}\n`;
   response += `  Active sessions: ${activeSessions.length}\n`;
-  response += `  Ready sessions: ${sessionStats.PROJECT_SELECTED || 0}\n\n`;
+  response += `  Ready sessions: ${sessionStats.PROJECT_SELECTED || 0}\n`;
+  response += `  Claude processes: ${spawnedProcesses}\n\n`;
 
   // Command history with pagination (if available)
   if (db && db.getCommandHistory && db.getCommandHistoryCount) {
