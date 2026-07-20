@@ -38,3 +38,9 @@ coverage/
 whatsapp-session/
 .wwebjs_auth/
 .wwebjs_cache/
+
+# CodeBridge session database (berisi user data, sessions, command history)
+.codebridge/
+*.db
+*.db-shm
+*.db-wal
