@@ -134,10 +134,10 @@ class CodeBridge {
    * Setup Gateway event handlers
    */
   setupGatewayHandlers() {
-    // Handle incoming platform:message from Gateway (WhatsApp, Discord, etc)
-    this.gatewayClient.on('platform:message', async (data) => {
+    // Handler function for processing WhatsApp messages
+    const handleWhatsAppMessage = async (data) => {
       try {
-        this.logger.info('[CodeBridge] Processing platform:message', {
+        this.logger.info('[CodeBridge] Processing WhatsApp message', {
           platform: data.platform || 'whatsapp',
           from: data.from,
           sessionId: data.sessionId,
@@ -198,7 +198,13 @@ class CodeBridge {
           timestamp: Date.now()
         });
       }
-    });
+    };
+
+    // Listen to both event names for backward compatibility
+    // Gateway Server emits 'whatsapp:message' (legacy)
+    // Future Gateway versions may emit 'platform:message'
+    this.gatewayClient.on('whatsapp:message', handleWhatsAppMessage);
+    this.gatewayClient.on('platform:message', handleWhatsAppMessage);
 
     this.logger.info('[CodeBridge] Gateway handlers setup completed');
   }
