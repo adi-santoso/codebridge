@@ -103,7 +103,7 @@ export class SessionManager extends EventEmitter {
         try {
           this.logger.info(`Restoring session: ${session.sessionId} for user ${session.userId}`);
 
-          // Spawn Claude subprocess
+          // Create Claude spawner
           const spawner = new DirectClaudeSpawner({
             projectPath: session.projectPath,
             sessionId: session.sessionId
@@ -114,6 +114,9 @@ export class SessionManager extends EventEmitter {
 
           // Store spawner
           this.spawners.set(session.sessionId, spawner);
+
+          // NOTE: Do NOT spawn subprocess here! It will be spawned lazily
+          // on first message with correct projectPath from spawner.
 
           // Create ToolExecutor
           const executor = new ToolExecutor({
@@ -265,6 +268,16 @@ export class SessionManager extends EventEmitter {
       buffer.text += text;
     });
 
+    // Output chunk streaming (for Discord real-time updates)
+    spawner.on('output-chunk', ({ userId, chunk, type }) => {
+      this.emit('output-chunk', {
+        sessionId,
+        userId,
+        chunk,
+        type
+      });
+    });
+
     // Tool use - execute tool and send result back
     spawner.on('tool-use', async ({ userId, tool }) => {
       this.logger.info(`[${sessionId}] Tool use: ${tool.name}`);
@@ -383,13 +396,21 @@ export class SessionManager extends EventEmitter {
       throw new Error(`No spawner for session ${sessionId}. Project may not be set correctly.`);
     }
 
+    this.logger.debug(`[sendPrompt] sessionId: ${sessionId}, userId: ${userId}`);
+    this.logger.debug(`[sendPrompt] spawner.projectPath: ${spawner.projectPath}`);
+    this.logger.debug(`[sendPrompt] spawner.sessions.size: ${spawner.sessions.size}`);
+    this.logger.debug(`[sendPrompt] spawner.sessions.has(${userId}): ${spawner.sessions.has(userId)}`);
+
     // Initialize response buffer
     this.responseBuffers.set(sessionId, { text: '', toolResults: [] });
 
     // Create or get Claude session
     let claudeSession = spawner.sessions.get(userId);
     if (!claudeSession) {
+      this.logger.info(`[sendPrompt] Creating new Claude session for user ${userId}`);
       claudeSession = await spawner.createSession(userId);
+    } else {
+      this.logger.info(`[sendPrompt] Reusing existing Claude session for user ${userId}`);
     }
 
     // Prepend WhatsApp formatting instructions to user message

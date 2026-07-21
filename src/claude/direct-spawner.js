@@ -252,6 +252,11 @@ export class DirectClaudeSpawner extends EventEmitter {
       const cwd = options.cwd || this.projectPath;
       const model = options.model || this.model;
 
+      this.emit('debug', `[createSession] userId: ${userId}`);
+      this.emit('debug', `[createSession] options.cwd: ${options.cwd}`);
+      this.emit('debug', `[createSession] this.projectPath: ${this.projectPath}`);
+      this.emit('debug', `[createSession] Resolved cwd: ${cwd}`);
+
       if (!cwd) {
         throw new Error('Project path (cwd) is required');
       }
@@ -449,6 +454,8 @@ export class DirectClaudeSpawner extends EventEmitter {
     switch (event.type) {
       case 'text_delta':
         this.emit('text', { userId, text: event.delta });
+        // Emit output chunk for real-time streaming (Discord)
+        this.emit('output-chunk', { userId, chunk: event.delta, type: 'text' });
         break;
 
       case 'thinking_delta':

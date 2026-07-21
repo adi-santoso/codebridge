@@ -21,7 +21,9 @@ import dotenv from 'dotenv';
 import GatewayClient from './gateway-client.js';
 import SessionRoomManager from './session-room-manager.js';
 import SessionManager from './claude/session-manager.js';
-import MessageHandler from './whatsapp/message-handler.js';
+import MessageHandler from './message-handler.js';
+import DiscordBot from './discord/bot.js';
+import { DiscordStreamingManager } from './discord/streaming-manager.js';
 import { ProjectRegistry } from './utils/project-registry.js';
 import { Logger } from './utils/logger.js';
 
@@ -34,6 +36,8 @@ class CodeBridge {
     this.sessionRoomManager = null;
     this.sessionManager = null;
     this.messageHandler = null;
+    this.discordBot = null;
+    this.discordStreamingManager = null;
     this.isShuttingDown = false;
     this.logger = new Logger('CodeBridge');
 
@@ -89,15 +93,30 @@ class CodeBridge {
       );
       this.sessionRoomManager.initialize();
 
-      // 7. Setup Gateway event handlers
+      // 7. Initialize Discord Bot (if configured)
+      this.logger.info('[CodeBridge] Initializing Discord Bot...');
+      this.discordBot = new DiscordBot();
+      const discordInitialized = await this.discordBot.initialize();
+      if (discordInitialized) {
+        // Initialize Discord Streaming Manager
+        this.discordStreamingManager = new DiscordStreamingManager(this.discordBot);
+        this.logger.success('[CodeBridge] Discord Streaming Manager initialized ✅');
+
+        this.setupDiscordHandlers();
+        this.logger.info('[CodeBridge] Discord bot initialized successfully ✅');
+      } else {
+        this.logger.info('[CodeBridge] Discord bot not configured - Discord channel disabled');
+      }
+
+      // 8. Setup Gateway event handlers
       this.setupGatewayHandlers();
 
-      // 8. Setup SessionManager hooks
+      // 9. Setup SessionManager hooks
       this.setupSessionHooks();
 
       this.logger.info('[CodeBridge] Initialization completed successfully ✅');
 
-      // 9. Manual join existing Gateway sessions (if specified in env)
+      // 10. Manual join existing Gateway sessions (if specified in env)
       await this.joinExistingGatewaySessions();
 
       this.printStatus();
@@ -115,10 +134,11 @@ class CodeBridge {
    * Setup Gateway event handlers
    */
   setupGatewayHandlers() {
-    // Handle incoming whatsapp:message from Gateway
-    this.gatewayClient.on('whatsapp:message', async (data) => {
+    // Handle incoming platform:message from Gateway (WhatsApp, Discord, etc)
+    this.gatewayClient.on('platform:message', async (data) => {
       try {
-        this.logger.info('[CodeBridge] Processing whatsapp:message', {
+        this.logger.info('[CodeBridge] Processing platform:message', {
+          platform: data.platform || 'whatsapp',
           from: data.from,
           sessionId: data.sessionId,
           messagePreview: data.message.substring(0, 50)
@@ -126,8 +146,9 @@ class CodeBridge {
 
         // Route to MessageHandler
         const result = await this.messageHandler.handleMessage({
-          userId: data.from, // Phone number
+          userId: data.from, // User ID (WhatsApp: phone number, Discord: user ID)
           message: data.message,
+          platform: data.platform || 'whatsapp', // Platform identifier
           requestId: `${data.sessionId}_${data.timestamp}`,
           gatewaySessionId: data.sessionId // Gateway session ID for reply
         });
@@ -183,6 +204,78 @@ class CodeBridge {
   }
 
   /**
+   * Setup Discord Bot event handlers
+   */
+  setupDiscordHandlers() {
+    // Handle incoming Discord messages
+    this.discordBot.on('message', async (data) => {
+      try {
+        this.logger.info('[CodeBridge] Processing Discord message', {
+          userId: data.userId,
+          channelId: data.channelId,
+          messagePreview: data.message.substring(0, 50)
+        });
+
+        // Route to MessageHandler
+        const result = await this.messageHandler.handleMessage({
+          userId: data.userId, // discord:123456789
+          message: data.message,
+          platform: data.platform, // 'discord'
+          requestId: `discord_${data.metadata.messageId}`,
+          discordChannelId: data.channelId, // For sending response back
+          discordMetadata: data.metadata
+        });
+
+        // Skip response if silentDrop (unauthorized user)
+        if (result.silentDrop) {
+          this.logger.info('[CodeBridge] Discord message silently dropped (unauthorized)', {
+            userId: data.userId,
+            channelId: data.channelId
+          });
+          return;
+        }
+
+        // Send immediate response for commands or errors
+        // Skip "Processing..." acknowledgment for prompts (isQueued=true)
+        if (result.response && !result.isQueued) {
+          await this.discordBot.sendMessage(data.channelId, result.response);
+
+          this.logger.info('[CodeBridge] Discord response sent', {
+            channelId: data.channelId,
+            userId: data.userId,
+            isError: result.isError,
+            responseLength: result.response.length
+          });
+        } else if (result.isQueued) {
+          this.logger.info('[CodeBridge] Discord prompt queued - skipping acknowledgment', {
+            channelId: data.channelId,
+            userId: data.userId
+          });
+        }
+
+        // For queued prompts, actual response will come via 'async-response' event
+
+      } catch (error) {
+        this.logger.error('[CodeBridge] Error processing Discord message', {
+          error: error.message,
+          data
+        });
+
+        // Send error response
+        try {
+          await this.discordBot.sendMessage(data.channelId, `❌ CodeBridge error: ${error.message}`);
+        } catch (sendError) {
+          this.logger.error('[CodeBridge] Failed to send Discord error message', {
+            error: sendError.message
+          });
+        }
+      }
+    });
+
+    this.logger.info('[CodeBridge] Discord handlers setup completed');
+  }
+
+  /**
    * Setup SessionManager hooks untuk room management
    */
   setupSessionHooks() {
@@ -209,6 +302,7 @@ class CodeBridge {
       userId,
       sessionId,
       gatewaySessionId,
+      discordChannelId,
       response,
       isChunked,
       chunkIndex,
@@ -219,6 +313,7 @@ class CodeBridge {
       this.logger.info(`[CodeBridge] Async response ready - delivering to user${chunkInfo}`, {
         sessionId,
         gatewaySessionId,
+        discordChannelId,
         userId,
         responseLength: response.length,
         isChunked,
@@ -231,58 +326,114 @@ class CodeBridge {
         await new Promise(resolve => setTimeout(resolve, 500)); // 500ms delay between chunks
       }
 
-      // Send async response to Gateway
-      this.gatewayClient.sendResponse({
-        sessionId: gatewaySessionId,
-        to: userId,
-        message: response,
-        timestamp: Date.now()
-      });
+      // Route response based on platform
+      if (discordChannelId) {
+        // Discord response - finish streaming
+        try {
+          // Finish streaming (ensures final update is sent)
+          if (this.discordStreamingManager) {
+            await this.discordStreamingManager.finishStream(discordChannelId);
+          }
 
-      this.logger.success(`[CodeBridge] Async response delivered${chunkInfo}`, {
-        gatewaySessionId,
-        to: userId
-      });
+          this.logger.success(`[CodeBridge] Discord stream finished${chunkInfo}`, {
+            channelId: discordChannelId,
+            userId
+          });
+        } catch (error) {
+          this.logger.error('[CodeBridge] Failed to finish Discord stream', {
+            error: error.message,
+            channelId: discordChannelId
+          });
+        }
+      } else if (gatewaySessionId) {
+        // WhatsApp response (via Gateway)
+        this.gatewayClient.sendResponse({
+          sessionId: gatewaySessionId,
+          to: userId,
+          message: response,
+          timestamp: Date.now()
+        });
+        this.logger.success(`[CodeBridge] Async response delivered to Gateway${chunkInfo}`, {
+          gatewaySessionId,
+          to: userId
+        });
+      }
     });
 
     // Hook async errors from MessageHandler
-    this.messageHandler.on('async-error', ({ userId, sessionId, gatewaySessionId, error }) => {
+    this.messageHandler.on('async-error', async ({ userId, sessionId, gatewaySessionId, discordChannelId, error }) => {
       this.logger.error('[CodeBridge] Async error - delivering to user', {
         sessionId,
         gatewaySessionId,
+        discordChannelId,
         userId,
         error
       });
 
-      // Send error message to Gateway
-      this.gatewayClient.sendResponse({
-        sessionId: gatewaySessionId,
-        to: userId,
-        message: `❌ Error: ${error}`,
-        timestamp: Date.now()
-      });
+      const errorMessage = `❌ Error: ${error}`;
+
+      // Route error based on platform
+      if (discordChannelId) {
+        try {
+          // Clear streaming and send error
+          if (this.discordStreamingManager) {
+            this.discordStreamingManager.clearStream(discordChannelId);
+          }
+          await this.discordBot.sendMessage(discordChannelId, errorMessage);
+        } catch (sendError) {
+          this.logger.error('[CodeBridge] Failed to send Discord error', { error: sendError.message });
+        }
+      } else if (gatewaySessionId) {
+        this.gatewayClient.sendResponse({
+          sessionId: gatewaySessionId,
+          to: userId,
+          message: errorMessage,
+          timestamp: Date.now()
+        });
+      }
     });
 
     // Hook request timeout from MessageHandler
-    this.messageHandler.on('request-timeout', ({ userId, sessionId, gatewaySessionId, requestId }) => {
+    this.messageHandler.on('request-timeout', async ({ userId, sessionId, gatewaySessionId, discordChannelId, requestId }) => {
       this.logger.warn('[CodeBridge] Request timeout - notifying user', {
         sessionId,
         gatewaySessionId,
+        discordChannelId,
         userId,
         requestId
       });
 
-      // Send timeout notification to Gateway
-      this.gatewayClient.sendResponse({
-        sessionId: gatewaySessionId,
-        to: userId,
-        message: `⏱️ *Request Timeout*\n\n` +
-                 `Your request took longer than ${Math.floor(this.messageHandler.requestTimeout / 1000)} seconds.\n\n` +
-                 `Claude may still be processing in the background. ` +
-                 `If the response arrives, you'll receive it shortly.\n\n` +
-                 `For complex tasks, consider breaking them into smaller requests.`,
-        timestamp: Date.now()
-      });
+      const timeoutMessage = '⏱️ Claude is taking longer than expected. Please wait...';
+
+      // Route timeout based on platform
+      if (discordChannelId) {
+        try {
+          await this.discordBot.sendMessage(discordChannelId, timeoutMessage);
+        } catch (sendError) {
+          this.logger.error('[CodeBridge] Failed to send Discord timeout', { error: sendError.message });
+        }
+      } else if (gatewaySessionId) {
+        this.gatewayClient.sendResponse({
+          sessionId: gatewaySessionId,
+          to: userId,
+          message: timeoutMessage,
+          timestamp: Date.now()
+        });
+      }
+    });
+
+    // Hook output chunks for Discord streaming
+    this.messageHandler.on('output-chunk', async ({ userId, sessionId, discordChannelId, chunk, type }) => {
+      if (!discordChannelId) return; // Only for Discord
+
+      try {
+        await this.discordStreamingManager.addChunk(discordChannelId, userId, chunk);
+      } catch (error) {
+        this.logger.error('[CodeBridge] Failed to handle Discord chunk', {
+          error: error.message,
+          channelId: discordChannelId
+        });
+      }
     });
 
     this.logger.info('[CodeBridge] Session hooks setup completed');

@@ -1,10 +1,10 @@
 /**
- * Message Handler - Phase 5
+ * Message Handler - Phase 5 (Multi-Platform)
  *
- * Routes messages from Socket.IO to SessionManager
+ * Routes messages from multiple platforms (WhatsApp, Discord) via Socket.IO to SessionManager
  *
  * Flow:
- * 1. Receive message from external WhatsApp gateway via Socket.IO
+ * 1. Receive message from external gateway (WhatsApp/Discord) via Socket.IO
  * 2. Check if message is a command (/newsession, /projects, etc.)
  * 3. If command: Route to SessionCommands
  * 4. If prompt: Route to SessionManager → DirectClaudeSpawner
@@ -13,10 +13,10 @@
  */
 
 import { EventEmitter } from 'events';
-import { Logger } from '../utils/logger.js';
-import { CommandParser } from '../commands/parser.js';
-import { SessionCommands } from '../commands/session-commands.js';
-import { CommandHandler } from '../commands/handler.js';
+import { Logger } from './utils/logger.js';
+import { CommandParser } from './commands/parser.js';
+import { SessionCommands } from './commands/session-commands.js';
+import { CommandHandler } from './commands/handler.js';
 
 export class MessageHandler extends EventEmitter {
   /**
@@ -47,7 +47,7 @@ export class MessageHandler extends EventEmitter {
       db: this.db,
       projectRootPath: options.projectRootPath,
       projectRegistry: options.projectRegistry,
-      allowedNumbers: this.parseAllowedNumbers(process.env.ALLOWED_WHATSAPP_NUMBERS)
+      allowedNumbers: this.parseAllowedUsers(process.env.ALLOWED_USERS || process.env.ALLOWED_WHATSAPP_NUMBERS)
     });
 
     // Pending requests: requestId → { userId, resolve, reject, timestamp }
@@ -56,46 +56,50 @@ export class MessageHandler extends EventEmitter {
     // Cache last gatewaySessionId per user for late responses
     this.lastGatewaySession = new Map();
 
+    // Cache last Discord channelId per user for late responses
+    this.lastDiscordChannel = new Map();
+
     // Request timeout (120 seconds - Claude tools can take time)
     this.requestTimeout = 120000;
 
-    // WhatsApp number whitelist
-    this.allowedNumbers = this.parseAllowedNumbers(process.env.ALLOWED_WHATSAPP_NUMBERS);
+    // Multi-platform user whitelist (supports WhatsApp numbers & Discord IDs)
+    this.allowedUsers = this.parseAllowedUsers(process.env.ALLOWED_USERS || process.env.ALLOWED_WHATSAPP_NUMBERS);
 
     // Setup event listeners
     this.setupEventListeners();
   }
 
   /**
-   * Parse allowed WhatsApp numbers from env
+   * Parse allowed users from env (supports WhatsApp numbers & Discord IDs)
+   * Format: "6285727042754,discord:123456789,6281234567890"
    * @private
    */
-  parseAllowedNumbers(envValue) {
+  parseAllowedUsers(envValue) {
     if (!envValue || envValue.trim() === '') {
-      this.logger.warn('No ALLOWED_WHATSAPP_NUMBERS configured - all numbers accepted (INSECURE)');
+      this.logger.warn('No ALLOWED_USERS configured - all users accepted (INSECURE)');
       return null; // null = allow all
     }
 
-    const numbers = envValue
+    const users = envValue
       .split(',')
-      .map(n => n.trim())
+      .map(u => u.trim())
       .filter(Boolean);
 
-    this.logger.info(`WhatsApp whitelist enabled: ${numbers.length} number(s)`);
-    return new Set(numbers);
+    this.logger.info(`User whitelist enabled: ${users.length} user(s)`);
+    return new Set(users);
   }
 
   /**
-   * Check if WhatsApp number is allowed
+   * Check if user is allowed (supports WhatsApp numbers & Discord IDs)
    * @private
    */
-  isNumberAllowed(userId) {
+  isUserAllowed(userId) {
     // If no whitelist configured, allow all
-    if (!this.allowedNumbers) {
+    if (!this.allowedUsers) {
       return true;
     }
 
-    return this.allowedNumbers.has(userId);
+    return this.allowedUsers.has(userId);
   }
 
   /**
@@ -141,11 +145,11 @@ export class MessageHandler extends EventEmitter {
    * @private
    */
   setupEventListeners() {
-    // Response ready - emit to parent (main.js will handle sending to Gateway)
+    // Response ready - emit to parent (main.js will handle sending to Gateway/Discord)
     this.sessionManager.on('response-ready', ({ sessionId, userId, response, toolResults, stopReason }) => {
       this.logger.info(`[${sessionId}] Response ready from async processing`);
 
-      // Find pending request for this user (to get gatewaySessionId)
+      // Find pending request for this user (to get gatewaySessionId or discordChannelId)
       const pending = this.findPendingRequest(userId);
 
       if (pending) {
@@ -155,6 +159,7 @@ export class MessageHandler extends EventEmitter {
             userId,
             sessionId,
             gatewaySessionId: pending.gatewaySessionId,
+            discordChannelId: pending.discordChannelId,
             response,
             toolResults,
             stopReason
@@ -171,6 +176,7 @@ export class MessageHandler extends EventEmitter {
             userId,
             sessionId,
             gatewaySessionId: pending.gatewaySessionId,
+            discordChannelId: pending.discordChannelId,
             response: chunk,
             toolResults: index === chunks.length - 1 ? toolResults : [], // Only attach toolResults to last chunk
             stopReason,
@@ -186,8 +192,9 @@ export class MessageHandler extends EventEmitter {
         // No pending request - likely timed out
         // Try to get gatewaySessionId from lastGatewaySession cache
         const gatewaySessionId = this.lastGatewaySession.get(userId);
+        const discordChannelId = this.lastDiscordChannel.get(userId);
 
-        if (gatewaySessionId) {
+        if (gatewaySessionId || discordChannelId) {
           this.logger.info(`[${sessionId}] Sending late response (after timeout) to user ${userId}`);
 
           // Add late response header and split if needed
@@ -200,6 +207,7 @@ export class MessageHandler extends EventEmitter {
               userId,
               sessionId,
               gatewaySessionId,
+              discordChannelId,
               response: chunk,
               toolResults: index === chunks.length - 1 ? toolResults : [],
               stopReason,
@@ -210,7 +218,7 @@ export class MessageHandler extends EventEmitter {
             });
           });
         } else {
-          this.logger.warn(`No pending request and no Gateway session cache found for user ${userId}`);
+          this.logger.warn(`No pending request and no Gateway/Discord session cache found for user ${userId}`);
         }
       }
     });
@@ -233,10 +241,28 @@ export class MessageHandler extends EventEmitter {
           userId,
           sessionId,
           gatewaySessionId: pending.gatewaySessionId,
+          discordChannelId: pending.discordChannelId,
           error: error.message
         });
 
         this.pendingRequests.delete(pending.requestId);
+      }
+    });
+
+    // Output chunk streaming (for Discord real-time updates)
+    this.sessionManager.on('output-chunk', ({ sessionId, userId, chunk, type }) => {
+      // Find pending request to get routing info
+      const pending = this.findPendingRequest(userId);
+
+      if (pending && pending.discordChannelId) {
+        // Emit chunk for Discord streaming
+        this.emit('output-chunk', {
+          userId,
+          sessionId,
+          discordChannelId: pending.discordChannelId,
+          chunk,
+          type
+        });
       }
     });
   }
@@ -244,20 +270,29 @@ export class MessageHandler extends EventEmitter {
   /**
    * Handle incoming message
    * @param {Object} data
-   * @param {string} data.userId - WhatsApp phone number (628xxx)
+   * @param {string} data.userId - User ID (WhatsApp: 628xxx, Discord: discord:123456)
    * @param {string} data.message - Message text
+   * @param {string} [data.platform] - Platform name (whatsapp, discord)
    * @param {string} [data.requestId] - Optional request ID for tracking
-   * @param {string} [data.gatewaySessionId] - Gateway session ID for async reply routing
+   * @param {string} [data.gatewaySessionId] - Gateway session ID for async reply routing (WhatsApp)
+   * @param {string} [data.discordChannelId] - Discord channel ID for async reply routing
    * @returns {Promise<Object>} Response object
    */
   async handleMessage(data) {
-    const { userId, message, requestId = this.generateRequestId(), gatewaySessionId } = data;
+    const {
+      userId,
+      message,
+      platform = 'whatsapp',
+      requestId = this.generateRequestId(),
+      gatewaySessionId,
+      discordChannelId
+    } = data;
 
-    this.logger.info(`[${requestId}] Message from ${userId}: ${message.substring(0, 50)}...`);
+    this.logger.info(`[${requestId}] Message from ${userId} (${platform}): ${message.substring(0, 50)}...`);
 
-    // Check whitelist - silently ignore unauthorized numbers
-    if (!this.isNumberAllowed(userId)) {
-      this.logger.warn(`[${requestId}] Unauthorized access attempt from ${userId} - silently ignored`);
+    // Check whitelist - silently ignore unauthorized users
+    if (!this.isUserAllowed(userId)) {
+      this.logger.warn(`[${requestId}] Unauthorized access attempt from ${userId} (${platform}) - silently ignored`);
 
       return {
         requestId,
@@ -275,7 +310,7 @@ export class MessageHandler extends EventEmitter {
       }
 
       // Regular prompt - route to SessionManager
-      return await this.handlePrompt(userId, message, requestId, gatewaySessionId);
+      return await this.handlePrompt(userId, message, requestId, gatewaySessionId, discordChannelId);
 
     } catch (error) {
       this.logger.error(`[${requestId}] Error:`, error.message);
@@ -334,7 +369,7 @@ export class MessageHandler extends EventEmitter {
    * Handle prompt message - TRUE ASYNC (no blocking wait)
    * @private
    */
-  async handlePrompt(userId, message, requestId, gatewaySessionId) {
+  async handlePrompt(userId, message, requestId, gatewaySessionId, discordChannelId) {
     this.logger.info(`[${requestId}] Processing prompt`);
 
     // Get active session
@@ -372,14 +407,20 @@ export class MessageHandler extends EventEmitter {
       this.pendingRequests.set(requestId, {
         userId,
         sessionId: session.sessionId,
-        gatewaySessionId, // Store for async response routing
+        gatewaySessionId, // Store for async response routing (WhatsApp)
+        discordChannelId, // Store for async response routing (Discord)
         timestamp: Date.now(),
         resolve: resolvePromise,
         reject: rejectPromise
       });
 
-      // Cache gatewaySessionId for this user (for late responses after timeout)
-      this.lastGatewaySession.set(userId, gatewaySessionId);
+      // Cache gatewaySessionId or discordChannelId for this user (for late responses after timeout)
+      if (gatewaySessionId) {
+        this.lastGatewaySession.set(userId, gatewaySessionId);
+      }
+      if (discordChannelId) {
+        this.lastDiscordChannel.set(userId, discordChannelId);
+      }
 
       // Send message to SessionManager (fire and forget)
       // Response will come via 'response-ready' event and be sent directly by event handler
