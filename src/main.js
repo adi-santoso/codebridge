@@ -334,17 +334,29 @@ class CodeBridge {
 
       // Route response based on platform
       if (discordChannelId) {
-        // Discord response - finish streaming
+        // Discord response - finish streaming or send direct message
         try {
-          // Finish streaming (ensures final update is sent)
           if (this.discordStreamingManager) {
-            await this.discordStreamingManager.finishStream(discordChannelId);
-          }
+            // Check if stream exists
+            const hasStream = this.discordStreamingManager.hasActiveStream(discordChannelId);
 
-          this.logger.success(`[CodeBridge] Discord stream finished${chunkInfo}`, {
-            channelId: discordChannelId,
-            userId
-          });
+            if (hasStream) {
+              // Finish streaming (ensures final update is sent)
+              await this.discordStreamingManager.finishStream(discordChannelId);
+              this.logger.success(`[CodeBridge] Discord stream finished${chunkInfo}`, {
+                channelId: discordChannelId,
+                userId
+              });
+            } else {
+              // No stream - send as direct message (response was too fast for streaming)
+              await this.discordBot.sendMessage(discordChannelId, response);
+              this.logger.success(`[CodeBridge] Discord response sent (no stream)${chunkInfo}`, {
+                channelId: discordChannelId,
+                userId,
+                responseLength: response.length
+              });
+            }
+          }
         } catch (error) {
           this.logger.error('[CodeBridge] Failed to finish Discord stream', {
             error: error.message,

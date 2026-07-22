@@ -485,6 +485,7 @@ export class MessageHandler extends EventEmitter {
           userId: data.userId,
           sessionId: data.sessionId,
           gatewaySessionId: data.gatewaySessionId,
+          discordChannelId: data.discordChannelId,
           requestId
         });
 

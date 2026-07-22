@@ -218,6 +218,15 @@ export class DiscordStreamingManager {
   }
 
   /**
+   * Check if there's an active stream for a channel
+   * @param {string} channelId - Discord channel ID
+   * @returns {boolean}
+   */
+  hasActiveStream(channelId) {
+    return this.activeStreams.has(channelId);
+  }
+
+  /**
    * Get active stream count
    */
   getActiveStreamCount() {
