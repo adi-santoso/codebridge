@@ -1,0 +1,68 @@
+name: Production VPS CI/CD
+'on':
+  push:
+    branches:
+    - master
+  pull_request:
+    branches:
+    - master
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: production-codebridge-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  test:
+    name: Validate and build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci
+      DIRECT_URL: postgresql://ci:ci@127.0.0.1:5432/ci
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: 22.23.3
+        cache: npm
+    - name: Validate and build
+      run: 'npm ci --no-audit --no-fund
+
+        node --check src/main.js
+
+        node -e const D=require(''better-sqlite3'');const d=new D('':memory:'');d.exec(''CREATE TABLE ready(id INTEGER)'');d.close()'
+  deploy:
+    name: Deploy pinned commit to production VPS
+    needs: test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+    - name: Deploy and verify health
+      env:
+        DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+        DEPLOY_HOST_KEY: ${{ secrets.DEPLOY_HOST_KEY }}
+      run: 'set -euo pipefail
+
+        task_ssh_dir=$(mktemp -d)
+
+        trap ''rm -rf "$task_ssh_dir"'' EXIT
+
+        printf "%s\n" "$DEPLOY_SSH_KEY" > "$task_ssh_dir/key"
+
+        printf "%s\n" "$DEPLOY_HOST_KEY" > "$task_ssh_dir/known_hosts"
+
+        chmod 600 "$task_ssh_dir/key" "$task_ssh_dir/known_hosts"
+
+        ssh -i "$task_ssh_dir/key" -p "$DEPLOY_PORT" -o BatchMode=yes -o ConnectTimeout=30 -o HostKeyAlgorithms=ssh-ed25519
+        -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$task_ssh_dir/known_hosts" "$DEPLOY_USER@$DEPLOY_HOST" "deploy
+        $GITHUB_SHA"
+
+        '
